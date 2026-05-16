@@ -1,0 +1,10 @@
+runpod
+yfinance
+pandas
+numpy
+matplotlib
+pytz
+torch
+transformers
+huggingface_hub
+requests
