@@ -27,7 +27,9 @@ try:
     MODEL_LOADED = True
 
 except Exception as e:
+    import traceback
     print(f"❌ Startup error: {e}")
+    print(traceback.format_exc())
     MODEL_LOADED = False
     predictor = None
 
