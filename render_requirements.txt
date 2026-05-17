@@ -1,3 +1,10 @@
+python-telegram-bot==20.7
+requests
+yfinance
+pandas
+numpy
+pandas-ta
+apscheduler
 flask
 gunicorn
-requests
+ 
