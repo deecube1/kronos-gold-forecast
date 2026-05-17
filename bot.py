@@ -8,7 +8,6 @@ import threading
 from datetime import datetime, timedelta
 
 import ta
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -32,6 +31,9 @@ RUNPOD_ENDPOINT_ID = os.environ["RUNPOD_ENDPOINT_ID"]
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
+
+FINNHUB_API_KEY = os.environ["FINNHUB_API_KEY"]
+FINNHUB_URL = "https://finnhub.io/api/v1"
 
 RUNPOD_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
 RUNPOD_STATUS_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status"
@@ -111,27 +113,57 @@ def send_photo_sync(chat_id, image_bytes, caption=""):
 # ─────────────────────────────────────────────
 
 def get_latest_indicators():
+    """Fetch XAU/USD M5 candles from Finnhub and calculate indicators."""
     try:
-        df = yf.download("GC=F", period="5d", interval="5m", progress=False)
-        if df.empty:
+        import pytz
+        import time as time_module
+
+        # Finnhub: get last 5 days of M5 candles
+        now = int(time_module.time())
+        five_days_ago = now - (5 * 24 * 60 * 60)
+
+        resp = requests.get(
+            f"{FINNHUB_URL}/forex/candle",
+            params={
+                "symbol": "OANDA:XAU_USD",
+                "resolution": "5",
+                "from": five_days_ago,
+                "to": now,
+                "token": FINNHUB_API_KEY,
+            }
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        if data.get("s") != "ok" or not data.get("c"):
+            logger.error(f"Finnhub returned: {data.get('s')}")
             return None
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        # Build DataFrame
+        df = pd.DataFrame({
+            "open":   data["o"],
+            "high":   data["h"],
+            "low":    data["l"],
+            "close":  data["c"],
+            "volume": data["v"],
+        }, index=pd.to_datetime(data["t"], unit="s", utc=True))
 
-        df = df.dropna()
-        close = df["Close"]
-        high = df["High"]
-        low = df["Low"]
-        volume = df["Volume"]
+        df = df.sort_index().dropna()
 
-        df["rsi"] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+        if len(df) < 30:
+            logger.error("Not enough candles from Finnhub")
+            return None
+
+        close  = df["close"]
+        high   = df["high"]
+        low    = df["low"]
+        volume = df["volume"]
+
+        df["rsi"]  = ta.momentum.RSIIndicator(close=close, window=14).rsi()
         df["ema9"] = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
-        df["ema21"] = ta.trend.EMAIndicator(close=close, window=21).ema_indicator()
+        df["ema21"]= ta.trend.EMAIndicator(close=close, window=21).ema_indicator()
 
         macd = ta.trend.MACD(close=close)
-        df["macd"] = macd.macd()
-        df["macd_signal"] = macd.macd_signal()
         df["macd_hist"] = macd.macd_diff()
 
         bb = ta.volatility.BollingerBands(close=close, window=20)
@@ -142,43 +174,38 @@ def get_latest_indicators():
             high=high, low=low, close=close, window=14
         ).average_true_range()
 
-        # Volume spike detection
-        df["vol_avg"] = volume.rolling(window=20).mean()
+        df["vol_avg"]   = volume.rolling(window=20).mean()
         df["vol_ratio"] = volume / df["vol_avg"]
 
         latest = df.iloc[-1]
-        prev = df.iloc[-2]
+        prev   = df.iloc[-2]
 
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
-        # Get last candle time in ICT (UTC+7)
+        # Last candle time in ICT (UTC+7)
         try:
-            import pytz
             ict = pytz.timezone("Asia/Bangkok")
-            last_ts = df.index[-1]
-            if last_ts.tzinfo is None:
-                last_ts = last_ts.tz_localize("UTC")
-            last_ts_ict = last_ts.astimezone(ict)
+            last_ts_ict = df.index[-1].astimezone(ict)
             last_candle_time = last_ts_ict.strftime("%b %d, %Y %-I:%M %p ICT")
         except Exception:
             last_candle_time = "Unknown"
 
         return {
-            "price": safe(latest["Close"]),
-            "rsi": safe(latest["rsi"]),
-            "ema9": safe(latest["ema9"]),
-            "ema21": safe(latest["ema21"]),
-            "macd_hist": safe(latest["macd_hist"]),
-            "prev_macd_hist": safe(prev["macd_hist"]),
-            "bb_upper": safe(latest["bb_upper"]),
-            "bb_lower": safe(latest["bb_lower"]),
-            "atr": safe(latest["atr"]),
-            "prev_ema9": safe(prev["ema9"]),
-            "prev_ema21": safe(prev["ema21"]),
-            "volume": safe(latest["Volume"]),
-            "vol_avg": safe(latest["vol_avg"]),
-            "vol_ratio": safe(latest["vol_ratio"]),
+            "price":            safe(latest["close"]),
+            "rsi":              safe(latest["rsi"]),
+            "ema9":             safe(latest["ema9"]),
+            "ema21":            safe(latest["ema21"]),
+            "macd_hist":        safe(latest["macd_hist"]),
+            "prev_macd_hist":   safe(prev["macd_hist"]),
+            "bb_upper":         safe(latest["bb_upper"]),
+            "bb_lower":         safe(latest["bb_lower"]),
+            "atr":              safe(latest["atr"]),
+            "prev_ema9":        safe(prev["ema9"]),
+            "prev_ema21":       safe(prev["ema21"]),
+            "volume":           safe(latest["volume"]),
+            "vol_avg":          safe(latest["vol_avg"]),
+            "vol_ratio":        safe(latest["vol_ratio"]),
             "last_candle_time": last_candle_time,
         }
     except Exception as e:
