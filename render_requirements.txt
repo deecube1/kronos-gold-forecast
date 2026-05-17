@@ -3,8 +3,6 @@ requests
 yfinance
 pandas
 numpy
-pandas-ta
+ta
 apscheduler
-flask
 gunicorn
- 
