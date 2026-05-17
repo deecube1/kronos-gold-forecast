@@ -152,6 +152,18 @@ def get_latest_indicators():
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
+        # Get last candle time in ICT (UTC+7)
+        try:
+            import pytz
+            ict = pytz.timezone("Asia/Bangkok")
+            last_ts = df.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize("UTC")
+            last_ts_ict = last_ts.astimezone(ict)
+            last_candle_time = last_ts_ict.strftime("%-I:%M %p ICT")
+        except Exception:
+            last_candle_time = "Unknown"
+
         return {
             "price": safe(latest["Close"]),
             "rsi": safe(latest["rsi"]),
@@ -167,6 +179,7 @@ def get_latest_indicators():
             "volume": safe(latest["Volume"]),
             "vol_avg": safe(latest["vol_avg"]),
             "vol_ratio": safe(latest["vol_ratio"]),
+            "last_candle_time": last_candle_time,
         }
     except Exception as e:
         logger.error(f"Market data error: {e}")
@@ -280,6 +293,7 @@ def generate_signal(ind, kronos_bias=None):
         "tp1": tp1,
         "tp2": tp2,
         "atr": atr,
+        "last_candle_time": ind.get("last_candle_time", "Unknown"),
     }
 
 
@@ -288,10 +302,12 @@ def format_signal_message(sig):
         "🔴 SELL 📉" if sig["direction"] == "SELL" else "⏸ WAIT"
     )
 
+    last_candle = sig.get('last_candle_time', 'Unknown')
     lines = [
-        "🥇 <b>XAU/USD Trading Signal</b>",
+        "🥇 <b>XAU/USD Trading Signal (M5)</b>",
         "",
         f"💰 Price: <b>${sig['price']:,.2f}</b>",
+        f"🕐 Data: <b>{last_candle}</b>",
         "",
         "<b>Indicator Analysis:</b>",
     ]
