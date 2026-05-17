@@ -1,37 +1,34 @@
+cat > handler.py << 'EOF'
 import runpod
 import sys
 import os
 
-try:
-    print("Cloning Kronos...")
-    os.system("git clone https://github.com/shiyu-coder/Kronos.git /tmp/Kronos")
-    sys.path.append('/tmp/Kronos')
+sys.path.append('/tmp/Kronos')
 
-    import yfinance as yf
-    import pandas as pd
-    import numpy as np
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-    import pytz
-    import base64
-    import io
+print("Step 1: Importing libraries...")
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import pytz
+import base64
+import io
 
-    from model import Kronos, KronosTokenizer, KronosPredictor
+print("Step 2: Importing Kronos...")
+from model import Kronos, KronosTokenizer, KronosPredictor
 
-    print("Loading Kronos-base model...")
-    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-    model     = Kronos.from_pretrained("NeoQuasar/Kronos-base")
-    predictor = KronosPredictor(model, tokenizer, max_context=512)
-    print("✅ Model loaded!")
-    MODEL_LOADED = True
+print("Step 3: Loading tokenizer from local path...")
+tokenizer = KronosTokenizer.from_pretrained("/app/models/tokenizer")
 
-except Exception as e:
-    import traceback
-    print(f"❌ Startup error: {e}")
-    print(traceback.format_exc())
-    MODEL_LOADED = False
-    predictor = None
+print("Step 4: Loading model from local path...")
+model = Kronos.from_pretrained("/app/models/kronos-base")
+
+print("Step 5: Creating predictor...")
+predictor = KronosPredictor(model, tokenizer, max_context=512)
+print("✅ Model loaded!")
+MODEL_LOADED = True
 
 def get_data(ticker="GC=F", interval="1h", period="60d"):
     hanoi_tz = pytz.timezone("Asia/Ho_Chi_Minh")
@@ -152,8 +149,6 @@ def build_table(df, pred_df, future_ts):
     }
 
 def handler(job):
-    if not MODEL_LOADED:
-        return {"status": "error", "message": "Model failed to load on startup"}
     try:
         inp    = job.get("input", {})
         ticker = inp.get("ticker", "GC=F")
