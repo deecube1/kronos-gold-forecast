@@ -53,8 +53,23 @@ _model = None
 _scaler = None
 _feature_cols = None
 
+# --- Load Romeo V8 model ---
+_romeo_v8 = None
+_romeo_base_features = [
+    'SMA_20','SMA_50','EMA_12','EMA_26','RSI','MACD','MACDSignal',
+    'BB_Upper','BB_Middle','BB_Lower','ATR','MFI','Volatility',
+    'High_Low_Ratio','Close_Open_Ratio','ROC','Momentum','Volume_MA',
+    'Volume_Ratio','Price_Change','High_Low_Spread','Body_Size',
+    'Upper_Wick','Lower_Wick','Trend_Up','Trend_Down',
+    'RSI_Not_Overbought','RSI_Not_Oversold','MACD_Positive',
+    'Close_Above_BB_Middle','Quantum_Entropy','Quantum_Phase',
+    'Quantum_Amplitude','Wavelet_Energy','Tree_Feature_1','NN_Feature_1',
+    'Linear_Feature_1','Distance_Feature_1','Fractal_Dimension',
+    'Fractal_Efficiency','Order_Flow','Market_Depth'
+]
+
 def load_custom_model():
-    global _model, _scaler, _feature_cols
+    global _model, _scaler, _feature_cols, _romeo_v8
     try:
         _model = joblib.load("gold_m5_model.pkl")
         _scaler = joblib.load("gold_m5_scaler.pkl")
@@ -64,6 +79,13 @@ def load_custom_model():
     except Exception as e:
         logger.error(f"Could not load custom model: {e}")
         _model = None
+
+    try:
+        _romeo_v8 = joblib.load("romeo_v8_model.pkl")
+        logger.info("Romeo V8 model loaded successfully")
+    except Exception as e:
+        logger.error(f"Could not load Romeo V8: {e}")
+        _romeo_v8 = None
 
 # --- Alert storage ---
 # Structure: { alert_id: { type, value, last_triggered, last_triggered_value, active } }
@@ -226,9 +248,115 @@ def get_latest_indicators():
             "vol_avg":          safe(latest["vol_avg"]),
             "vol_ratio":        safe(latest["vol_ratio"]),
             "last_candle_time": last_candle_time,
+            "_raw_df": df,
         }
     except Exception as e:
         logger.error(f"Market data error: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────
+# ROMEO V8 FEATURE ENGINEERING
+# ─────────────────────────────────────────────
+
+def build_romeo_features(df):
+    """Build Romeo V8 features from OHLCV dataframe."""
+    d = df.copy()
+    d.columns = [c.capitalize() for c in d.columns]
+
+    d['SMA_20'] = d['Close'].rolling(20).mean()
+    d['SMA_50'] = d['Close'].rolling(50).mean()
+    d['EMA_12'] = d['Close'].ewm(span=12, adjust=False).mean()
+    d['EMA_26'] = d['Close'].ewm(span=26, adjust=False).mean()
+
+    delta = d['Close'].diff()
+    up = delta.clip(lower=0)
+    down = -delta.clip(upper=0)
+    d['RSI'] = 100 - (100 / (1 + up.ewm(alpha=1/14, adjust=False).mean() /
+                              (down.ewm(alpha=1/14, adjust=False).mean() + 1e-12)))
+
+    d['MACD'] = d['Close'].ewm(span=12, adjust=False).mean() - d['Close'].ewm(span=26, adjust=False).mean()
+    d['MACDSignal'] = d['MACD'].ewm(span=9, adjust=False).mean()
+    d['BB_Middle'] = d['Close'].rolling(20).mean()
+    std = d['Close'].rolling(20).std()
+    d['BB_Upper'] = d['BB_Middle'] + 2 * std
+    d['BB_Lower'] = d['BB_Middle'] - 2 * std
+    d['ATR'] = (d['High'] - d['Low']).rolling(14).mean()
+    d['MFI'] = 50
+
+    d['Volatility'] = d['Close'].pct_change().rolling(20).std()
+    d['High_Low_Ratio'] = (d['High'] - d['Low']) / (d['Close'] + 1e-12)
+    d['Close_Open_Ratio'] = (d['Close'] - d['Open']) / (d['Open'] + 1e-12)
+    d['ROC'] = d['Close'].pct_change(10)
+    d['Momentum'] = d['Close'] - d['Close'].shift(10)
+    d['Volume_MA'] = d['Volume'].rolling(20).mean()
+    d['Volume_Ratio'] = d['Volume'] / (d['Volume_MA'] + 1e-12)
+    d['Price_Change'] = d['Close'].pct_change()
+    d['High_Low_Spread'] = d['High'] - d['Low']
+    d['Body_Size'] = abs(d['Close'] - d['Open'])
+    d['Upper_Wick'] = d['High'] - pd.concat([d['Close'], d['Open']], axis=1).max(axis=1)
+    d['Lower_Wick'] = pd.concat([d['Close'], d['Open']], axis=1).min(axis=1) - d['Low']
+    d['Trend_Up'] = (d['Close'] > d['SMA_20']).astype(int)
+    d['Trend_Down'] = (d['Close'] < d['SMA_20']).astype(int)
+    d['RSI_Not_Overbought'] = (d['RSI'] < 70).astype(int)
+    d['RSI_Not_Oversold'] = (d['RSI'] > 30).astype(int)
+    d['MACD_Positive'] = (d['MACD'] > d['MACDSignal']).astype(int)
+    d['Close_Above_BB_Middle'] = (d['Close'] > d['BB_Middle']).astype(int)
+
+    pct = d['Close'].pct_change().fillna(0)
+    vol_pct = d['Close'].pct_change().rolling(20).std().fillna(0)
+    d['Quantum_Entropy'] = -(pct * np.log(np.abs(pct) + 1e-10)).rolling(20).sum().fillna(0)
+    d['Quantum_Phase'] = np.angle(pct + 1j * vol_pct)
+    d['Quantum_Amplitude'] = np.abs(pct + 1j * vol_pct)
+    d['Wavelet_Energy'] = d['Close'].rolling(20).var().fillna(0)
+    d['Tree_Feature_1'] = d['RSI'] * d['MACD']
+    d['NN_Feature_1'] = np.sin(d['Quantum_Phase'])
+    d['Linear_Feature_1'] = d['Momentum'] / (d['ATR'] + 1e-10)
+    d['Distance_Feature_1'] = d['Volatility'] ** 2
+    d['Fractal_Dimension'] = (d['High'] - d['Low']).rolling(20).std().fillna(0)
+    d['Fractal_Efficiency'] = (d['Close'] - d['Close'].shift(20)).abs() / ((d['High'] - d['Low']).rolling(20).sum() + 1e-10)
+    d['Order_Flow'] = (d['Close'] - d['Open']) * d['Volume']
+    d['Market_Depth'] = d['Volume'] / (d['High_Low_Spread'] + 1e-10)
+
+    return d
+
+
+def get_romeo_v8_signal(ohlcv_df):
+    """Get Romeo V8 prediction from OHLCV dataframe."""
+    if _romeo_v8 is None:
+        return None
+    try:
+        feat_df = build_romeo_features(ohlcv_df.tail(200))
+        feat_df = feat_df.dropna()
+        if len(feat_df) < 50:
+            return None
+
+        X_base = feat_df[_romeo_base_features].values
+        X_scaled = _romeo_v8['scaler'].transform(X_base)
+        X_pca = _romeo_v8['pca'].transform(X_scaled)
+        X_full = np.hstack([X_base, X_pca])
+
+        base_preds = []
+        for name, model in _romeo_v8['calibrated_models'].items():
+            try:
+                if name == 'nn':
+                    base_preds.append(np.full(X_full.shape[0], 0.5))
+                else:
+                    base_preds.append(model.predict_proba(X_full)[:, 1])
+            except:
+                base_preds.append(np.full(X_full.shape[0], 0.5))
+
+        meta_X = np.column_stack(base_preds)
+        pred = _romeo_v8['meta_learner'].predict(meta_X)[-1]
+        proba = _romeo_v8['meta_learner'].predict_proba(meta_X)[-1]
+        confidence = float(max(proba))
+
+        return {
+            "direction": "BUY" if pred == 1 else "SELL",
+            "confidence": confidence
+        }
+    except Exception as e:
+        logger.error(f"Romeo V8 prediction error: {e}")
         return None
 
 
@@ -351,6 +479,17 @@ def generate_signal(ind, kronos_bias=None):
         else:
             score -= 3
             signals.append(f"🧠 Gold AI Model: SELL ({conf_pct}% confidence)")
+
+    # Romeo V8 Super Ensemble
+    romeo = get_romeo_v8_signal(ind.get("_raw_df")) if ind.get("_raw_df") is not None else None
+    if romeo:
+        conf_pct = int(romeo["confidence"] * 100)
+        if romeo["direction"] == "BUY":
+            score += 3
+            signals.append(f"👑 Romeo V8 (10-model): BUY ({conf_pct}% confidence)")
+        else:
+            score -= 3
+            signals.append(f"👑 Romeo V8 (10-model): SELL ({conf_pct}% confidence)")
 
     if kronos_bias:
         if "BULLISH" in kronos_bias.upper():

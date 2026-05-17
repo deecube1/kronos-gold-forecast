@@ -9,3 +9,5 @@ pytz
 xgboost
 scikit-learn
 joblib
+lightgbm
+catboost
