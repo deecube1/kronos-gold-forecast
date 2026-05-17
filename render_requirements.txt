@@ -6,3 +6,6 @@ ta
 apscheduler
 gunicorn
 pytz
+xgboost
+scikit-learn
+joblib

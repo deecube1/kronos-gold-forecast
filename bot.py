@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 import ta
 import pandas as pd
 import numpy as np
+import joblib
+import json
 from apscheduler.schedulers.background import BackgroundScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -45,6 +47,23 @@ RUNPOD_HEADERS = {
 # --- Global app reference ---
 _app = None
 _main_loop = None
+
+# --- Load custom Gold M5 model ---
+_model = None
+_scaler = None
+_feature_cols = None
+
+def load_custom_model():
+    global _model, _scaler, _feature_cols
+    try:
+        _model = joblib.load("gold_m5_model.pkl")
+        _scaler = joblib.load("gold_m5_scaler.pkl")
+        with open("gold_m5_features.json") as f:
+            _feature_cols = json.load(f)
+        logger.info(f"Custom Gold M5 model loaded: {len(_feature_cols)} features")
+    except Exception as e:
+        logger.error(f"Could not load custom model: {e}")
+        _model = None
 
 # --- Alert storage ---
 # Structure: { alert_id: { type, value, last_triggered, last_triggered_value, active } }
@@ -214,6 +233,49 @@ def get_latest_indicators():
 
 
 # ─────────────────────────────────────────────
+# CUSTOM MODEL PREDICTION
+# ─────────────────────────────────────────────
+
+def get_custom_model_signal(ind):
+    """Run our trained Gold M5 model to get BUY/SELL prediction."""
+    if _model is None or _scaler is None or _feature_cols is None:
+        return None
+    try:
+        # Build feature row from current indicators
+        row = {}
+        for col in _feature_cols:
+            row[col] = 0.0  # default
+
+        # Map available indicators to feature columns
+        mapping = {
+            "rsi_14": ind.get("rsi"),
+            "ema_9": ind.get("ema9"),
+            "ema_21": ind.get("ema21"),
+            "ema_9_21_diff": (ind.get("ema9") or 0) - (ind.get("ema21") or 0),
+            "macd_hist": ind.get("macd_hist"),
+            "bb_upper": ind.get("bb_upper"),
+            "bb_lower": ind.get("bb_lower"),
+            "atr_14": ind.get("atr"),
+            "vol_ratio": ind.get("vol_ratio"),
+        }
+        for feat, val in mapping.items():
+            if feat in row and val is not None:
+                row[feat] = val
+
+        X = pd.DataFrame([row])[_feature_cols]
+        X_scaled = _scaler.transform(X)
+        pred = _model.predict(X_scaled)[0]
+        proba = _model.predict_proba(X_scaled)[0]
+        confidence = max(proba)
+
+        direction = "BUY" if pred == 1 else "SELL"
+        return {"direction": direction, "confidence": float(confidence)}
+    except Exception as e:
+        logger.error(f"Custom model prediction error: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────
 # SIGNAL GENERATION
 # ─────────────────────────────────────────────
 
@@ -278,6 +340,17 @@ def generate_signal(ind, kronos_bias=None):
 
     if ind["vol_ratio"] and ind["vol_ratio"] >= 2.0:
         signals.append(f"📊 Volume Spike: {ind['vol_ratio']:.1f}x average — big move possible!")
+
+    # Custom Gold M5 model
+    custom = get_custom_model_signal(ind)
+    if custom:
+        conf_pct = int(custom["confidence"] * 100)
+        if custom["direction"] == "BUY":
+            score += 3
+            signals.append(f"🧠 Gold AI Model: BUY ({conf_pct}% confidence)")
+        else:
+            score -= 3
+            signals.append(f"🧠 Gold AI Model: SELL ({conf_pct}% confidence)")
 
     if kronos_bias:
         if "BULLISH" in kronos_bias.upper():
@@ -806,6 +879,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     global _app, _main_loop
+
+    # Load custom model
+    load_custom_model()
 
     _app = Application.builder().token(TELEGRAM_TOKEN).build()
 
