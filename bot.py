@@ -82,11 +82,16 @@ def load_custom_model():
 
     try:
         import sys
-        # Mock keras/tensorflow so Romeo V8 loads without it
         from unittest.mock import MagicMock
-        sys.modules['keras'] = MagicMock()
-        sys.modules['tensorflow'] = MagicMock()
-        sys.modules['tensorflow.keras'] = MagicMock()
+        # Mock all keras/tensorflow submodules aggressively
+        for mod in list(sys.modules.keys()):
+            if 'keras' in mod or 'tensorflow' in mod:
+                del sys.modules[mod]
+        mock_keras = MagicMock()
+        mock_keras.__spec__ = None
+        for submod in ['keras', 'keras.src', 'keras.src.layers', 'keras.layers',
+                       'keras.models', 'keras.backend', 'tensorflow', 'tensorflow.keras']:
+            sys.modules[submod] = mock_keras
         _romeo_v8 = joblib.load("romeo_v8_model.pkl")
         logger.info("Romeo V8 model loaded successfully")
     except Exception as e:
