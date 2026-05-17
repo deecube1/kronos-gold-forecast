@@ -81,19 +81,8 @@ def load_custom_model():
         _model = None
 
     try:
-        import sys
-        from unittest.mock import MagicMock
-        # Mock all keras/tensorflow submodules aggressively
-        for mod in list(sys.modules.keys()):
-            if 'keras' in mod or 'tensorflow' in mod:
-                del sys.modules[mod]
-        mock_keras = MagicMock()
-        mock_keras.__spec__ = None
-        for submod in ['keras', 'keras.src', 'keras.src.layers', 'keras.layers',
-                       'keras.models', 'keras.backend', 'tensorflow', 'tensorflow.keras']:
-            sys.modules[submod] = mock_keras
         _romeo_v8 = joblib.load("romeo_v8_model.pkl")
-        logger.info("Romeo V8 model loaded successfully")
+        logger.info(f"Romeo V8 loaded: {len(_romeo_v8['calibrated_models'])} models")
     except Exception as e:
         logger.error(f"Could not load Romeo V8: {e}")
         _romeo_v8 = None
@@ -350,10 +339,7 @@ def get_romeo_v8_signal(ohlcv_df):
         base_preds = []
         for name, model in _romeo_v8['calibrated_models'].items():
             try:
-                if name == 'nn':
-                    base_preds.append(np.full(X_full.shape[0], 0.5))
-                else:
-                    base_preds.append(model.predict_proba(X_full)[:, 1])
+                base_preds.append(model.predict_proba(X_full)[:, 1])
             except:
                 base_preds.append(np.full(X_full.shape[0], 0.5))
 
