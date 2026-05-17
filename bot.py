@@ -40,16 +40,19 @@ RUNPOD_HEADERS = {
     "Content-Type": "application/json",
 }
 
-# --- Global app reference (set in main) ---
+# --- Global app reference ---
 _app = None
 _main_loop = None
 
 # --- Alert storage ---
+# Structure: { alert_id: { type, value, last_triggered, last_triggered_value, active } }
 active_alerts = {}
 alert_id_counter = [0]
 
 # --- User state for multi-step input ---
 user_state = {}
+
+COOLDOWN_MINUTES = 5  # Global cooldown
 
 
 # ─────────────────────────────────────────────
@@ -88,7 +91,6 @@ def poll_runpod_job(job_id, timeout=300, interval=10):
 # ─────────────────────────────────────────────
 
 def send_message_sync(chat_id, text):
-    """Send message from a background thread safely."""
     future = asyncio.run_coroutine_threadsafe(
         _app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML"),
         _main_loop
@@ -97,7 +99,6 @@ def send_message_sync(chat_id, text):
 
 
 def send_photo_sync(chat_id, image_bytes, caption=""):
-    """Send photo from a background thread safely."""
     future = asyncio.run_coroutine_threadsafe(
         _app.bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption),
         _main_loop
@@ -122,6 +123,7 @@ def get_latest_indicators():
         close = df["Close"]
         high = df["High"]
         low = df["Low"]
+        volume = df["Volume"]
 
         df["rsi"] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
         df["ema9"] = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
@@ -136,7 +138,13 @@ def get_latest_indicators():
         df["bb_upper"] = bb.bollinger_hband()
         df["bb_lower"] = bb.bollinger_lband()
 
-        df["atr"] = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
+        df["atr"] = ta.volatility.AverageTrueRange(
+            high=high, low=low, close=close, window=14
+        ).average_true_range()
+
+        # Volume spike detection
+        df["vol_avg"] = volume.rolling(window=20).mean()
+        df["vol_ratio"] = volume / df["vol_avg"]
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -156,6 +164,9 @@ def get_latest_indicators():
             "atr": safe(latest["atr"]),
             "prev_ema9": safe(prev["ema9"]),
             "prev_ema21": safe(prev["ema21"]),
+            "volume": safe(latest["Volume"]),
+            "vol_avg": safe(latest["vol_avg"]),
+            "vol_ratio": safe(latest["vol_ratio"]),
         }
     except Exception as e:
         logger.error(f"Market data error: {e}")
@@ -225,6 +236,9 @@ def generate_signal(ind, kronos_bias=None):
         else:
             signals.append("📊 Bollinger: Price within bands")
 
+    if ind["vol_ratio"] and ind["vol_ratio"] >= 2.0:
+        signals.append(f"📊 Volume Spike: {ind['vol_ratio']:.1f}x average — big move possible!")
+
     if kronos_bias:
         if "BULLISH" in kronos_bias.upper():
             score += 2
@@ -270,7 +284,9 @@ def generate_signal(ind, kronos_bias=None):
 
 
 def format_signal_message(sig):
-    direction_emoji = "✅ BUY 📈" if sig["direction"] == "BUY" else ("🔴 SELL 📉" if sig["direction"] == "SELL" else "⏸ WAIT")
+    direction_emoji = "✅ BUY 📈" if sig["direction"] == "BUY" else (
+        "🔴 SELL 📉" if sig["direction"] == "SELL" else "⏸ WAIT"
+    )
 
     lines = [
         "🥇 <b>XAU/USD Trading Signal</b>",
@@ -350,7 +366,7 @@ def format_forecast_message(output, pred_len):
 
 
 # ─────────────────────────────────────────────
-# BACKGROUND TASKS (run in threads)
+# BACKGROUND TASKS
 # ─────────────────────────────────────────────
 
 def run_forecast_thread(chat_id, pred_len):
@@ -393,6 +409,10 @@ def run_signal_thread(chat_id, use_kronos=True):
         send_message_sync(chat_id, f"❌ Error: {str(e)}")
 
 
+# ─────────────────────────────────────────────
+# ALERT MONITORING (every 1 minute)
+# ─────────────────────────────────────────────
+
 def check_alerts_thread():
     if not active_alerts:
         return
@@ -402,56 +422,40 @@ def check_alerts_thread():
         if not ind:
             return
 
-        price = ind["price"]
         rsi = ind["rsi"]
+        vol_ratio = ind["vol_ratio"]
+        price = ind["price"]
         now = datetime.utcnow()
 
         for alert_id, alert in list(active_alerts.items()):
             if not alert["active"]:
                 continue
 
-            if alert["last_triggered"]:
-                elapsed = (now - alert["last_triggered"]).total_seconds() / 60
-                if elapsed < alert["cooldown_minutes"]:
-                    continue
-
             triggered = False
+            current_value = None
             message = ""
 
-            if alert["type"] == "price_above" and price >= alert["value"]:
-                triggered = True
-                message = (
-                    f"🚨 <b>PRICE ALERT!</b>\n\n"
-                    f"📈 XAU/USD crossed <b>ABOVE ${alert['value']:,.2f}</b>\n"
-                    f"💰 Current Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
-                    f"👉 Tap 📊 Signal for full analysis"
-                )
-            elif alert["type"] == "price_below" and price <= alert["value"]:
-                triggered = True
-                message = (
-                    f"🚨 <b>PRICE ALERT!</b>\n\n"
-                    f"📉 XAU/USD dropped <b>BELOW ${alert['value']:,.2f}</b>\n"
-                    f"💰 Current Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
-                    f"👉 Tap 📊 Signal for full analysis"
-                )
-            elif alert["type"] == "rsi_above" and rsi and rsi >= alert["value"]:
+            # ── RSI Above ──
+            if alert["type"] == "rsi_above" and rsi and rsi >= alert["value"]:
+                current_value = round(rsi, 1)
                 triggered = True
                 message = (
                     f"🚨 <b>RSI ALERT!</b>\n\n"
-                    f"🔥 RSI crossed <b>ABOVE {alert['value']}</b> (Overbought!)\n"
+                    f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
                     f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
                     f"💰 Price: <b>${price:,.2f}</b>\n"
                     f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
                     f"⚠️ Possible reversal — consider SELL\n"
                     f"👉 Tap 📊 Signal for full analysis"
                 )
+
+            # ── RSI Below ──
             elif alert["type"] == "rsi_below" and rsi and rsi <= alert["value"]:
+                current_value = round(rsi, 1)
                 triggered = True
                 message = (
                     f"🚨 <b>RSI ALERT!</b>\n\n"
-                    f"😴 RSI dropped <b>BELOW {alert['value']}</b> (Oversold!)\n"
+                    f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
                     f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
                     f"💰 Price: <b>${price:,.2f}</b>\n"
                     f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
@@ -459,9 +463,38 @@ def check_alerts_thread():
                     f"👉 Tap 📊 Signal for full analysis"
                 )
 
-            if triggered:
-                alert["last_triggered"] = now
-                send_message_sync(TELEGRAM_GROUP_ID, message)
+            # ── Volume Spike ──
+            elif alert["type"] == "volume_spike" and vol_ratio and vol_ratio >= alert["value"]:
+                current_value = round(vol_ratio, 2)
+                triggered = True
+                message = (
+                    f"🚨 <b>VOLUME SPIKE ALERT!</b>\n\n"
+                    f"📊 Unusual volume detected!\n"
+                    f"📈 Volume: <b>{vol_ratio:.1f}x average</b>\n"
+                    f"💰 Price: <b>${price:,.2f}</b>\n"
+                    f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                    f"⚡ High activity — possible big move coming!\n"
+                    f"👉 Tap 📊 Signal for full analysis"
+                )
+
+            if not triggered:
+                continue
+
+            # ── Cooldown check (5 minutes) ──
+            if alert["last_triggered"]:
+                elapsed = (now - alert["last_triggered"]).total_seconds() / 60
+                if elapsed < COOLDOWN_MINUTES:
+                    continue
+
+            # ── Value change check — only alert if value changed ──
+            last_val = alert.get("last_triggered_value")
+            if last_val is not None and current_value == last_val:
+                continue
+
+            # ── Fire alert ──
+            alert["last_triggered"] = now
+            alert["last_triggered_value"] = current_value
+            send_message_sync(TELEGRAM_GROUP_ID, message)
 
     except Exception as e:
         logger.error(f"Alert check error: {e}")
@@ -471,14 +504,15 @@ def check_alerts_thread():
 # ALERT HELPERS
 # ─────────────────────────────────────────────
 
-def add_alert(chat_id, alert_type, value, cooldown_minutes):
+def add_alert(chat_id, alert_type, value):
     alert_id_counter[0] += 1
     aid = alert_id_counter[0]
     active_alerts[aid] = {
         "type": alert_type,
         "value": value,
-        "cooldown_minutes": cooldown_minutes,
+        "cooldown_minutes": COOLDOWN_MINUTES,
         "last_triggered": None,
+        "last_triggered_value": None,
         "active": True,
         "chat_id": chat_id,
     }
@@ -487,10 +521,9 @@ def add_alert(chat_id, alert_type, value, cooldown_minutes):
 
 def format_alert_label(alert_type, value):
     labels = {
-        "price_above": f"📈 Price Above ${value:,.2f}",
-        "price_below": f"📉 Price Below ${value:,.2f}",
         "rsi_above": f"🔥 RSI Above {value}",
         "rsi_below": f"😴 RSI Below {value}",
+        "volume_spike": f"📊 Volume Spike {value}x average",
     }
     return labels.get(alert_type, alert_type)
 
@@ -526,12 +559,12 @@ def main_menu_keyboard():
 def alert_menu_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📈 Price Above $", callback_data="alert_price_above"),
-            InlineKeyboardButton("📉 Price Below $", callback_data="alert_price_below"),
-        ],
-        [
             InlineKeyboardButton("🔥 RSI Above", callback_data="alert_rsi_above"),
             InlineKeyboardButton("😴 RSI Below", callback_data="alert_rsi_below"),
+        ],
+        [
+            InlineKeyboardButton("📊 Volume Spike (2x)", callback_data="alert_vol_2"),
+            InlineKeyboardButton("📊 Volume Spike (3x)", callback_data="alert_vol_3"),
         ],
         [
             InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu"),
@@ -576,41 +609,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_state[user_id]
 
-    if state["step"] == "waiting_price_above":
-        try:
-            value = float(text.replace("$", "").replace(",", ""))
-            add_alert(chat_id, "price_above", value, 15)
-            del user_state[user_id]
-            await update.message.reply_text(
-                f"✅ <b>Alert Set!</b>\n\n📈 Will notify when price goes <b>ABOVE ${value:,.2f}</b>\n⏱ Cooldown: 15 min",
-                parse_mode="HTML",
-                reply_markup=main_menu_keyboard(),
-            )
-        except ValueError:
-            await update.message.reply_text("❌ Invalid. Enter a number like: 4600")
-
-    elif state["step"] == "waiting_price_below":
-        try:
-            value = float(text.replace("$", "").replace(",", ""))
-            add_alert(chat_id, "price_below", value, 15)
-            del user_state[user_id]
-            await update.message.reply_text(
-                f"✅ <b>Alert Set!</b>\n\n📉 Will notify when price drops <b>BELOW ${value:,.2f}</b>\n⏱ Cooldown: 15 min",
-                parse_mode="HTML",
-                reply_markup=main_menu_keyboard(),
-            )
-        except ValueError:
-            await update.message.reply_text("❌ Invalid. Enter a number like: 4500")
-
-    elif state["step"] == "waiting_rsi_above":
+    if state["step"] == "waiting_rsi_above":
         try:
             value = float(text)
             if not (0 < value < 100):
                 raise ValueError
-            add_alert(chat_id, "rsi_above", value, 30)
+            add_alert(chat_id, "rsi_above", value)
             del user_state[user_id]
             await update.message.reply_text(
-                f"✅ <b>Alert Set!</b>\n\n🔥 Will notify when RSI goes <b>ABOVE {value}</b>\n⏱ Cooldown: 30 min",
+                f"✅ <b>Alert Set!</b>\n\n🔥 Will notify when RSI goes <b>ABOVE {value}</b>\n"
+                f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
+                f"🔄 Only alerts if RSI value changes",
                 parse_mode="HTML",
                 reply_markup=main_menu_keyboard(),
             )
@@ -622,10 +631,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             value = float(text)
             if not (0 < value < 100):
                 raise ValueError
-            add_alert(chat_id, "rsi_below", value, 30)
+            add_alert(chat_id, "rsi_below", value)
             del user_state[user_id]
             await update.message.reply_text(
-                f"✅ <b>Alert Set!</b>\n\n😴 Will notify when RSI drops <b>BELOW {value}</b>\n⏱ Cooldown: 30 min",
+                f"✅ <b>Alert Set!</b>\n\n😴 Will notify when RSI drops <b>BELOW {value}</b>\n"
+                f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
+                f"🔄 Only alerts if RSI value changes",
                 parse_mode="HTML",
                 reply_markup=main_menu_keyboard(),
             )
@@ -672,37 +683,51 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "alert_menu":
         await query.edit_message_text(
-            "🚨 <b>Set Alert</b>\n\nChoose alert type:",
+            "🚨 <b>Set Alert</b>\n\n"
+            "Alerts fire every <b>5 minutes</b> if value changes.\n\n"
+            "Choose alert type:",
             parse_mode="HTML",
             reply_markup=alert_menu_keyboard(),
-        )
-
-    elif data == "alert_price_above":
-        user_state[user_id] = {"step": "waiting_price_above"}
-        await query.edit_message_text(
-            "📈 <b>Price Above Alert</b>\n\nType the price level:\nExample: <code>4600</code>",
-            parse_mode="HTML",
-        )
-
-    elif data == "alert_price_below":
-        user_state[user_id] = {"step": "waiting_price_below"}
-        await query.edit_message_text(
-            "📉 <b>Price Below Alert</b>\n\nType the price level:\nExample: <code>4500</code>",
-            parse_mode="HTML",
         )
 
     elif data == "alert_rsi_above":
         user_state[user_id] = {"step": "waiting_rsi_above"}
         await query.edit_message_text(
-            "🔥 <b>RSI Above Alert</b>\n\nType the RSI level (overbought = 70):\nExample: <code>70</code>",
+            "🔥 <b>RSI Above Alert</b>\n\n"
+            "Type the RSI level (overbought = 70):\n"
+            "Example: <code>70</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_rsi_below":
         user_state[user_id] = {"step": "waiting_rsi_below"}
         await query.edit_message_text(
-            "😴 <b>RSI Below Alert</b>\n\nType the RSI level (oversold = 30):\nExample: <code>30</code>",
+            "😴 <b>RSI Below Alert</b>\n\n"
+            "Type the RSI level (oversold = 30):\n"
+            "Example: <code>30</code>",
             parse_mode="HTML",
+        )
+
+    elif data == "alert_vol_2":
+        add_alert(chat_id, "volume_spike", 2.0)
+        await query.edit_message_text(
+            "✅ <b>Volume Spike Alert Set!</b>\n\n"
+            "📊 Will notify when volume is <b>2x above average</b>\n"
+            f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
+            "🔄 Only alerts if volume ratio changes",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
+        )
+
+    elif data == "alert_vol_3":
+        add_alert(chat_id, "volume_spike", 3.0)
+        await query.edit_message_text(
+            "✅ <b>Volume Spike Alert Set!</b>\n\n"
+            "📊 Will notify when volume is <b>3x above average</b>\n"
+            f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
+            "🔄 Only alerts if volume ratio changes",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
         )
 
     elif data == "list_alerts":
@@ -716,7 +741,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines = ["📋 <b>Active Alerts</b>\n"]
             for aid, alert in active_alerts.items():
                 if alert["active"]:
-                    lines.append(f"#{aid} {format_alert_label(alert['type'], alert['value'])} (cooldown: {alert['cooldown_minutes']}min)")
+                    lines.append(f"#{aid} {format_alert_label(alert['type'], alert['value'])}")
             await query.edit_message_text(
                 "\n".join(lines),
                 parse_mode="HTML",
@@ -746,14 +771,13 @@ def main():
     _app.add_handler(CallbackQueryHandler(button_callback))
     _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Capture the main event loop for thread-safe sends
     async def post_init(app):
         global _main_loop
         _main_loop = asyncio.get_event_loop()
 
     _app.post_init = post_init
 
-    # Alert scheduler
+    # Alert scheduler — every 1 minute
     scheduler = BackgroundScheduler()
     scheduler.add_job(check_alerts_thread, "interval", minutes=1)
     scheduler.start()
