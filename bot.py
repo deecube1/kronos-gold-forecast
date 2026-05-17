@@ -196,10 +196,10 @@ def generate_signal(ind, kronos_bias=None):
             signals.append("📉 EMA: Bearish crossover just happened!")
         elif ind["ema9"] > ind["ema21"]:
             score += 1
-            signals.append(f"📈 EMA: Uptrend (9:{ind['ema9']:.1f} > 21:{ind['ema21']:.1f})")
+            signals.append(f"📈 EMA: Uptrend (9:{ind['ema9']:.1f} &gt; 21:{ind['ema21']:.1f})")
         else:
             score -= 1
-            signals.append(f"📉 EMA: Downtrend (9:{ind['ema9']:.1f} < 21:{ind['ema21']:.1f})")
+            signals.append(f"📉 EMA: Downtrend (9:{ind['ema9']:.1f} &lt; 21:{ind['ema21']:.1f})")
 
     if ind["macd_hist"] and ind["prev_macd_hist"]:
         if ind["prev_macd_hist"] < 0 and ind["macd_hist"] > 0:
