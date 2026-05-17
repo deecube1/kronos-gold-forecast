@@ -160,7 +160,7 @@ def get_latest_indicators():
             if last_ts.tzinfo is None:
                 last_ts = last_ts.tz_localize("UTC")
             last_ts_ict = last_ts.astimezone(ict)
-            last_candle_time = last_ts_ict.strftime("%-I:%M %p ICT")
+            last_candle_time = last_ts_ict.strftime("%b %d, %Y %-I:%M %p ICT")
         except Exception:
             last_candle_time = "Unknown"
 
