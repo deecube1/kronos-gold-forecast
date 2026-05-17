@@ -568,18 +568,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
     text = update.message.text.strip()
 
-    if chat_id not in user_state:
+    if user_id not in user_state:
         return
 
-    state = user_state[chat_id]
+    state = user_state[user_id]
 
     if state["step"] == "waiting_price_above":
         try:
             value = float(text.replace("$", "").replace(",", ""))
             add_alert(chat_id, "price_above", value, 15)
-            del user_state[chat_id]
+            del user_state[user_id]
             await update.message.reply_text(
                 f"✅ <b>Alert Set!</b>\n\n📈 Will notify when price goes <b>ABOVE ${value:,.2f}</b>\n⏱ Cooldown: 15 min",
                 parse_mode="HTML",
@@ -592,7 +593,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             value = float(text.replace("$", "").replace(",", ""))
             add_alert(chat_id, "price_below", value, 15)
-            del user_state[chat_id]
+            del user_state[user_id]
             await update.message.reply_text(
                 f"✅ <b>Alert Set!</b>\n\n📉 Will notify when price drops <b>BELOW ${value:,.2f}</b>\n⏱ Cooldown: 15 min",
                 parse_mode="HTML",
@@ -607,7 +608,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not (0 < value < 100):
                 raise ValueError
             add_alert(chat_id, "rsi_above", value, 30)
-            del user_state[chat_id]
+            del user_state[user_id]
             await update.message.reply_text(
                 f"✅ <b>Alert Set!</b>\n\n🔥 Will notify when RSI goes <b>ABOVE {value}</b>\n⏱ Cooldown: 30 min",
                 parse_mode="HTML",
@@ -622,7 +623,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not (0 < value < 100):
                 raise ValueError
             add_alert(chat_id, "rsi_below", value, 30)
-            del user_state[chat_id]
+            del user_state[user_id]
             await update.message.reply_text(
                 f"✅ <b>Alert Set!</b>\n\n😴 Will notify when RSI drops <b>BELOW {value}</b>\n⏱ Cooldown: 30 min",
                 parse_mode="HTML",
@@ -637,6 +638,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     chat_id = query.message.chat.id
+    user_id = query.from_user.id
     if chat_id != TELEGRAM_GROUP_ID:
         return
 
@@ -676,28 +678,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "alert_price_above":
-        user_state[chat_id] = {"step": "waiting_price_above"}
+        user_state[user_id] = {"step": "waiting_price_above"}
         await query.edit_message_text(
             "📈 <b>Price Above Alert</b>\n\nType the price level:\nExample: <code>4600</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_price_below":
-        user_state[chat_id] = {"step": "waiting_price_below"}
+        user_state[user_id] = {"step": "waiting_price_below"}
         await query.edit_message_text(
             "📉 <b>Price Below Alert</b>\n\nType the price level:\nExample: <code>4500</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_rsi_above":
-        user_state[chat_id] = {"step": "waiting_rsi_above"}
+        user_state[user_id] = {"step": "waiting_rsi_above"}
         await query.edit_message_text(
             "🔥 <b>RSI Above Alert</b>\n\nType the RSI level (overbought = 70):\nExample: <code>70</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_rsi_below":
-        user_state[chat_id] = {"step": "waiting_rsi_below"}
+        user_state[user_id] = {"step": "waiting_rsi_below"}
         await query.edit_message_text(
             "😴 <b>RSI Below Alert</b>\n\nType the RSI level (oversold = 30):\nExample: <code>30</code>",
             parse_mode="HTML",
