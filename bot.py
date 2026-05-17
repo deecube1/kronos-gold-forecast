@@ -3,6 +3,7 @@ import time
 import base64
 import logging
 import requests
+import asyncio
 import threading
 from datetime import datetime, timedelta
 
@@ -39,7 +40,11 @@ RUNPOD_HEADERS = {
     "Content-Type": "application/json",
 }
 
-# --- Alert storage (in-memory) ---
+# --- Global app reference (set in main) ---
+_app = None
+_main_loop = None
+
+# --- Alert storage ---
 active_alerts = {}
 alert_id_counter = [0]
 
@@ -79,17 +84,37 @@ def poll_runpod_job(job_id, timeout=300, interval=10):
 
 
 # ─────────────────────────────────────────────
-# MARKET DATA & TECHNICAL ANALYSIS
+# SEND HELPERS (thread-safe)
+# ─────────────────────────────────────────────
+
+def send_message_sync(chat_id, text):
+    """Send message from a background thread safely."""
+    future = asyncio.run_coroutine_threadsafe(
+        _app.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML"),
+        _main_loop
+    )
+    future.result(timeout=30)
+
+
+def send_photo_sync(chat_id, image_bytes, caption=""):
+    """Send photo from a background thread safely."""
+    future = asyncio.run_coroutine_threadsafe(
+        _app.bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption),
+        _main_loop
+    )
+    future.result(timeout=30)
+
+
+# ─────────────────────────────────────────────
+# MARKET DATA & INDICATORS
 # ─────────────────────────────────────────────
 
 def get_latest_indicators():
-    """Fetch latest XAU/USD data with technical indicators."""
     try:
         df = yf.download("GC=F", period="5d", interval="5m", progress=False)
         if df.empty:
             return None
 
-        # Flatten MultiIndex columns if present
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -98,29 +123,20 @@ def get_latest_indicators():
         high = df["High"]
         low = df["Low"]
 
-        # RSI
-        rsi_indicator = ta.momentum.RSIIndicator(close=close, window=14)
-        df["rsi"] = rsi_indicator.rsi()
-
-        # EMA
+        df["rsi"] = ta.momentum.RSIIndicator(close=close, window=14).rsi()
         df["ema9"] = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
         df["ema21"] = ta.trend.EMAIndicator(close=close, window=21).ema_indicator()
 
-        # MACD
         macd = ta.trend.MACD(close=close)
         df["macd"] = macd.macd()
         df["macd_signal"] = macd.macd_signal()
         df["macd_hist"] = macd.macd_diff()
 
-        # Bollinger Bands
         bb = ta.volatility.BollingerBands(close=close, window=20)
         df["bb_upper"] = bb.bollinger_hband()
-        df["bb_mid"] = bb.bollinger_mavg()
         df["bb_lower"] = bb.bollinger_lband()
 
-        # ATR
-        atr = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14)
-        df["atr"] = atr.average_true_range()
+        df["atr"] = ta.volatility.AverageTrueRange(high=high, low=low, close=close, window=14).average_true_range()
 
         latest = df.iloc[-1]
         prev = df.iloc[-2]
@@ -133,12 +149,9 @@ def get_latest_indicators():
             "rsi": safe(latest["rsi"]),
             "ema9": safe(latest["ema9"]),
             "ema21": safe(latest["ema21"]),
-            "macd": safe(latest["macd"]),
-            "macd_signal": safe(latest["macd_signal"]),
             "macd_hist": safe(latest["macd_hist"]),
             "prev_macd_hist": safe(prev["macd_hist"]),
             "bb_upper": safe(latest["bb_upper"]),
-            "bb_mid": safe(latest["bb_mid"]),
             "bb_lower": safe(latest["bb_lower"]),
             "atr": safe(latest["atr"]),
             "prev_ema9": safe(prev["ema9"]),
@@ -160,72 +173,66 @@ def generate_signal(ind, kronos_bias=None):
     signals = []
     score = 0
 
-    # RSI
     if ind["rsi"]:
         if ind["rsi"] < 30:
             score += 2
-            signals.append(("bullish", f"😴 RSI: {ind['rsi']:.1f} (OVERSOLD — bullish)"))
+            signals.append(f"😴 RSI: {ind['rsi']:.1f} (OVERSOLD — bullish)")
         elif ind["rsi"] > 70:
             score -= 2
-            signals.append(("bearish", f"🔥 RSI: {ind['rsi']:.1f} (OVERBOUGHT — bearish)"))
+            signals.append(f"🔥 RSI: {ind['rsi']:.1f} (OVERBOUGHT — bearish)")
         elif ind["rsi"] < 50:
             score -= 1
-            signals.append(("neutral", f"📊 RSI: {ind['rsi']:.1f} (below 50)"))
+            signals.append(f"📊 RSI: {ind['rsi']:.1f} (below 50)")
         else:
             score += 1
-            signals.append(("neutral", f"📊 RSI: {ind['rsi']:.1f} (above 50)"))
+            signals.append(f"📊 RSI: {ind['rsi']:.1f} (above 50)")
 
-    # EMA crossover
     if ind["ema9"] and ind["ema21"] and ind["prev_ema9"] and ind["prev_ema21"]:
         if ind["ema9"] > ind["ema21"] and ind["prev_ema9"] <= ind["prev_ema21"]:
             score += 3
-            signals.append(("bullish", "📈 EMA: Bullish crossover just happened!"))
+            signals.append("📈 EMA: Bullish crossover just happened!")
         elif ind["ema9"] < ind["ema21"] and ind["prev_ema9"] >= ind["prev_ema21"]:
             score -= 3
-            signals.append(("bearish", "📉 EMA: Bearish crossover just happened!"))
+            signals.append("📉 EMA: Bearish crossover just happened!")
         elif ind["ema9"] > ind["ema21"]:
             score += 1
-            signals.append(("bullish", f"📈 EMA: Uptrend (9:{ind['ema9']:.1f} > 21:{ind['ema21']:.1f})"))
+            signals.append(f"📈 EMA: Uptrend (9:{ind['ema9']:.1f} > 21:{ind['ema21']:.1f})")
         else:
             score -= 1
-            signals.append(("bearish", f"📉 EMA: Downtrend (9:{ind['ema9']:.1f} < 21:{ind['ema21']:.1f})"))
+            signals.append(f"📉 EMA: Downtrend (9:{ind['ema9']:.1f} < 21:{ind['ema21']:.1f})")
 
-    # MACD
     if ind["macd_hist"] and ind["prev_macd_hist"]:
         if ind["prev_macd_hist"] < 0 and ind["macd_hist"] > 0:
             score += 3
-            signals.append(("bullish", "📈 MACD: Bullish crossover!"))
+            signals.append("📈 MACD: Bullish crossover!")
         elif ind["prev_macd_hist"] > 0 and ind["macd_hist"] < 0:
             score -= 3
-            signals.append(("bearish", "📉 MACD: Bearish crossover!"))
+            signals.append("📉 MACD: Bearish crossover!")
         elif ind["macd_hist"] > 0:
             score += 1
-            signals.append(("bullish", "📈 MACD: Bullish momentum"))
+            signals.append("📈 MACD: Bullish momentum")
         else:
             score -= 1
-            signals.append(("bearish", "📉 MACD: Bearish momentum"))
+            signals.append("📉 MACD: Bearish momentum")
 
-    # Bollinger Bands
     if ind["bb_upper"] and ind["bb_lower"]:
         if ind["price"] <= ind["bb_lower"]:
             score += 2
-            signals.append(("bullish", "📉 Price at lower Bollinger Band (oversold zone)"))
+            signals.append("📉 Price at lower Bollinger Band (oversold zone)")
         elif ind["price"] >= ind["bb_upper"]:
             score -= 2
-            signals.append(("bearish", "📈 Price at upper Bollinger Band (overbought zone)"))
+            signals.append("📈 Price at upper Bollinger Band (overbought zone)")
         else:
-            signals.append(("neutral", "📊 Bollinger: Price within bands"))
+            signals.append("📊 Bollinger: Price within bands")
 
-    # Kronos bias
     if kronos_bias:
         if "BULLISH" in kronos_bias.upper():
             score += 2
-            signals.append(("bullish", f"🤖 Kronos AI: {kronos_bias}"))
+            signals.append(f"🤖 Kronos AI: {kronos_bias}")
         elif "BEARISH" in kronos_bias.upper():
             score -= 2
-            signals.append(("bearish", f"🤖 Kronos AI: {kronos_bias}"))
+            signals.append(f"🤖 Kronos AI: {kronos_bias}")
 
-    # Determine direction
     if score >= 4:
         direction = "BUY"
         confidence = "HIGH ⚡⚡⚡" if score >= 7 else "MEDIUM ⚡⚡"
@@ -253,7 +260,6 @@ def generate_signal(ind, kronos_bias=None):
     return {
         "direction": direction,
         "confidence": confidence,
-        "score": score,
         "signals": signals,
         "price": entry,
         "sl": sl,
@@ -273,8 +279,7 @@ def format_signal_message(sig):
         "",
         "<b>Indicator Analysis:</b>",
     ]
-
-    for _, note in sig["signals"]:
+    for note in sig["signals"]:
         lines.append(f"  {note}")
 
     lines += [
@@ -300,14 +305,6 @@ def format_signal_message(sig):
 # ─────────────────────────────────────────────
 # FORECAST HELPERS
 # ─────────────────────────────────────────────
-
-def format_ampm(time_str):
-    try:
-        t = datetime.strptime(time_str.replace(" ICT", "").strip(), "%H:%M")
-        return t.strftime("%-I:%M %p") + " ICT"
-    except Exception:
-        return time_str
-
 
 def format_row_time(time_str):
     try:
@@ -353,70 +350,50 @@ def format_forecast_message(output, pred_len):
 
 
 # ─────────────────────────────────────────────
-# BACKGROUND TASKS
+# BACKGROUND TASKS (run in threads)
 # ─────────────────────────────────────────────
 
-def run_forecast_thread(app, chat_id, pred_len):
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    async def _run():
-        try:
-            await app.bot.send_message(chat_id=chat_id, text=f"⏳ Running {pred_len}h forecast... please wait (2-3 min)")
-            job_id = submit_runpod_job(pred_len)
-            output = poll_runpod_job(job_id)
-            message, _ = format_forecast_message(output, pred_len)
-            chart_bytes = base64.b64decode(output["chart_b64"])
-            await app.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
-            await app.bot.send_photo(chat_id=chat_id, photo=chart_bytes, caption=f"📊 Kronos Gold {pred_len}h Forecast")
-        except Exception as e:
-            await app.bot.send_message(chat_id=chat_id, text=f"❌ Error: {str(e)}")
-
-    loop.run_until_complete(_run())
-    loop.close()
+def run_forecast_thread(chat_id, pred_len):
+    try:
+        send_message_sync(chat_id, f"⏳ Running {pred_len}h forecast... please wait (2-3 min)")
+        job_id = submit_runpod_job(pred_len)
+        output = poll_runpod_job(job_id)
+        message, _ = format_forecast_message(output, pred_len)
+        chart_bytes = base64.b64decode(output["chart_b64"])
+        send_message_sync(chat_id, message)
+        send_photo_sync(chat_id, chart_bytes, caption=f"📊 Kronos Gold {pred_len}h Forecast")
+    except Exception as e:
+        send_message_sync(chat_id, f"❌ Error: {str(e)}")
 
 
-def run_signal_thread(app, chat_id, use_kronos=True):
-    import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def run_signal_thread(chat_id, use_kronos=True):
+    try:
+        send_message_sync(chat_id, "⏳ Analyzing market...")
 
-    async def _run():
-        try:
-            await app.bot.send_message(chat_id=chat_id, text="⏳ Analyzing market...")
+        kronos_bias = None
+        if use_kronos:
+            send_message_sync(chat_id, "🤖 Getting Kronos AI bias...")
+            try:
+                job_id = submit_runpod_job(1)
+                output = poll_runpod_job(job_id)
+                kronos_bias = output["table"]["bias"]
+            except Exception:
+                kronos_bias = None
 
-            kronos_bias = None
-            if use_kronos:
-                await app.bot.send_message(chat_id=chat_id, text="🤖 Getting Kronos AI bias...")
-                try:
-                    job_id = submit_runpod_job(1)
-                    output = poll_runpod_job(job_id)
-                    kronos_bias = output["table"]["bias"]
-                except Exception:
-                    kronos_bias = None
+        ind = get_latest_indicators()
+        if not ind:
+            send_message_sync(chat_id, "❌ Could not fetch market data. Market may be closed.")
+            return
 
-            ind = get_latest_indicators()
-            if not ind:
-                await app.bot.send_message(chat_id=chat_id, text="❌ Could not fetch market data. Market may be closed.")
-                return
+        sig = generate_signal(ind, kronos_bias)
+        message = format_signal_message(sig)
+        send_message_sync(chat_id, message)
 
-            sig = generate_signal(ind, kronos_bias)
-            message = format_signal_message(sig)
-            await app.bot.send_message(chat_id=chat_id, text=message, parse_mode="HTML")
-
-        except Exception as e:
-            await app.bot.send_message(chat_id=chat_id, text=f"❌ Error: {str(e)}")
-
-    loop.run_until_complete(_run())
-    loop.close()
+    except Exception as e:
+        send_message_sync(chat_id, f"❌ Error: {str(e)}")
 
 
-# ─────────────────────────────────────────────
-# ALERT MONITORING
-# ─────────────────────────────────────────────
-
-def check_alerts(app):
+def check_alerts_thread():
     if not active_alerts:
         return
 
@@ -428,18 +405,6 @@ def check_alerts(app):
         price = ind["price"]
         rsi = ind["rsi"]
         now = datetime.utcnow()
-
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def _send(alert, message):
-            alert["last_triggered"] = now
-            await app.bot.send_message(
-                chat_id=TELEGRAM_GROUP_ID,
-                text=message,
-                parse_mode="HTML",
-            )
 
         for alert_id, alert in list(active_alerts.items()):
             if not alert["active"]:
@@ -462,7 +427,6 @@ def check_alerts(app):
                     f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
                     f"👉 Tap 📊 Signal for full analysis"
                 )
-
             elif alert["type"] == "price_below" and price <= alert["value"]:
                 triggered = True
                 message = (
@@ -472,7 +436,6 @@ def check_alerts(app):
                     f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
                     f"👉 Tap 📊 Signal for full analysis"
                 )
-
             elif alert["type"] == "rsi_above" and rsi and rsi >= alert["value"]:
                 triggered = True
                 message = (
@@ -484,7 +447,6 @@ def check_alerts(app):
                     f"⚠️ Possible reversal — consider SELL\n"
                     f"👉 Tap 📊 Signal for full analysis"
                 )
-
             elif alert["type"] == "rsi_below" and rsi and rsi <= alert["value"]:
                 triggered = True
                 message = (
@@ -498,9 +460,8 @@ def check_alerts(app):
                 )
 
             if triggered:
-                loop.run_until_complete(_send(alert, message))
-
-        loop.close()
+                alert["last_triggered"] = now
+                send_message_sync(TELEGRAM_GROUP_ID, message)
 
     except Exception as e:
         logger.error(f"Alert check error: {e}")
@@ -690,20 +651,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "signal":
         await query.edit_message_text("⏳ Analyzing market indicators...")
-        t = threading.Thread(target=run_signal_thread, args=(context.application, chat_id, False))
+        t = threading.Thread(target=run_signal_thread, args=(chat_id, False))
         t.daemon = True
         t.start()
 
     elif data == "signal_ai":
         await query.edit_message_text("⏳ Analyzing market + calling Kronos AI (2-3 min)...")
-        t = threading.Thread(target=run_signal_thread, args=(context.application, chat_id, True))
+        t = threading.Thread(target=run_signal_thread, args=(chat_id, True))
         t.daemon = True
         t.start()
 
     elif data.startswith("forecast_"):
         pred_len = int(data.split("_")[1])
         await query.edit_message_text(f"⏳ Running {pred_len}h forecast (2-3 min)...")
-        t = threading.Thread(target=run_forecast_thread, args=(context.application, chat_id, pred_len))
+        t = threading.Thread(target=run_forecast_thread, args=(chat_id, pred_len))
         t.daemon = True
         t.start()
 
@@ -717,36 +678,28 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "alert_price_above":
         user_state[chat_id] = {"step": "waiting_price_above"}
         await query.edit_message_text(
-            "📈 <b>Price Above Alert</b>\n\n"
-            "Type the price level:\n"
-            "Example: <code>4600</code>",
+            "📈 <b>Price Above Alert</b>\n\nType the price level:\nExample: <code>4600</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_price_below":
         user_state[chat_id] = {"step": "waiting_price_below"}
         await query.edit_message_text(
-            "📉 <b>Price Below Alert</b>\n\n"
-            "Type the price level:\n"
-            "Example: <code>4500</code>",
+            "📉 <b>Price Below Alert</b>\n\nType the price level:\nExample: <code>4500</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_rsi_above":
         user_state[chat_id] = {"step": "waiting_rsi_above"}
         await query.edit_message_text(
-            "🔥 <b>RSI Above Alert</b>\n\n"
-            "Type the RSI level (overbought = 70):\n"
-            "Example: <code>70</code>",
+            "🔥 <b>RSI Above Alert</b>\n\nType the RSI level (overbought = 70):\nExample: <code>70</code>",
             parse_mode="HTML",
         )
 
     elif data == "alert_rsi_below":
         user_state[chat_id] = {"step": "waiting_rsi_below"}
         await query.edit_message_text(
-            "😴 <b>RSI Below Alert</b>\n\n"
-            "Type the RSI level (oversold = 30):\n"
-            "Example: <code>30</code>",
+            "😴 <b>RSI Below Alert</b>\n\nType the RSI level (oversold = 30):\nExample: <code>30</code>",
             parse_mode="HTML",
         )
 
@@ -782,20 +735,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─────────────────────────────────────────────
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    global _app, _main_loop
 
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(CommandHandler("menu", menu_command))
-    app.add_handler(CallbackQueryHandler(button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    _app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Background alert scheduler (every 1 minute)
+    _app.add_handler(CommandHandler("start", start_command))
+    _app.add_handler(CommandHandler("menu", menu_command))
+    _app.add_handler(CallbackQueryHandler(button_callback))
+    _app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Capture the main event loop for thread-safe sends
+    async def post_init(app):
+        global _main_loop
+        _main_loop = asyncio.get_event_loop()
+
+    _app.post_init = post_init
+
+    # Alert scheduler
     scheduler = BackgroundScheduler()
-    scheduler.add_job(check_alerts, "interval", minutes=1, args=[app])
+    scheduler.add_job(check_alerts_thread, "interval", minutes=1)
     scheduler.start()
 
     port = int(os.environ.get("PORT", 8080))
-    app.run_webhook(
+    _app.run_webhook(
         listen="0.0.0.0",
         port=port,
         webhook_url=f"{WEBHOOK_URL}/webhook",
