@@ -34,8 +34,8 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
-FINNHUB_API_KEY = os.environ["FINNHUB_API_KEY"]
-FINNHUB_URL = "https://finnhub.io/api/v1"
+TWELVEDATA_API_KEY = os.environ["TWELVEDATA_API_KEY"]
+TWELVEDATA_URL = "https://api.twelvedata.com"
 
 RUNPOD_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
 RUNPOD_STATUS_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status"
@@ -154,30 +154,44 @@ def send_photo_sync(chat_id, image_bytes, caption=""):
 # ─────────────────────────────────────────────
 
 def get_latest_indicators():
-    """Fetch XAU/USD M5 candles and calculate indicators."""
+    """Fetch XAU/USD M5 candles from TwelveData (real-time, no delay)."""
     try:
         import pytz
-        import yfinance as yf
 
-        # Use XAUUSD=X (spot Gold) — more accurate than GC=F futures
-        df = yf.download("XAUUSD=X", period="5d", interval="5m", progress=False)
+        # TwelveData — real-time XAU/USD M5
+        resp = requests.get(
+            f"{TWELVEDATA_URL}/time_series",
+            params={
+                "symbol": "XAU/USD",
+                "interval": "5min",
+                "outputsize": 100,
+                "apikey": TWELVEDATA_API_KEY,
+                "format": "JSON",
+            }
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-        if df.empty:
-            # Fallback to GC=F futures
-            df = yf.download("GC=F", period="5d", interval="5m", progress=False)
-
-        if df.empty:
-            logger.error("No data from yfinance")
+        if "values" not in data:
+            logger.error(f"TwelveData error: {data.get('message', 'unknown')}")
             return None
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        rows = data["values"]
+        df = pd.DataFrame(rows)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()
+        df = df.rename(columns={
+            "open": "open", "high": "high",
+            "low": "low", "close": "close", "volume": "volume"
+        })
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df.columns = [c.lower() for c in df.columns]
-        df = df.sort_index().dropna()
+        df = df.dropna()
 
         if len(df) < 30:
-            logger.error("Not enough candles")
+            logger.error("Not enough candles from TwelveData")
             return None
 
         close  = df["close"]

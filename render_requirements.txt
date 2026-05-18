@@ -11,4 +11,3 @@ scikit-learn
 joblib
 lightgbm
 catboost
-yfinance
