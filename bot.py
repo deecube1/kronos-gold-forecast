@@ -228,8 +228,12 @@ def get_latest_indicators():
             high=high, low=low, close=close, window=14
         ).average_true_range()
 
-        df["vol_avg"]   = volume.rolling(window=20).mean()
-        df["vol_ratio"] = volume / df["vol_avg"]
+        if volume.sum() > 0:
+            df["vol_avg"]   = volume.rolling(window=20).mean()
+            df["vol_ratio"] = volume / df["vol_avg"].replace(0, 1)
+        else:
+            df["vol_avg"]   = 0
+            df["vol_ratio"] = 0
 
         latest = df.iloc[-1]
         prev   = df.iloc[-2]
@@ -257,9 +261,9 @@ def get_latest_indicators():
             "atr":              safe(latest["atr"]),
             "prev_ema9":        safe(prev["ema9"]),
             "prev_ema21":       safe(prev["ema21"]),
-            "volume":           safe(latest["volume"]),
-            "vol_avg":          safe(latest["vol_avg"]),
-            "vol_ratio":        safe(latest["vol_ratio"]),
+            "volume":           safe(latest["volume"]) if "volume" in latest.index else 0,
+            "vol_avg":          safe(latest["vol_avg"]) if "vol_avg" in latest.index else 0,
+            "vol_ratio":        safe(latest["vol_ratio"]) if "vol_ratio" in latest.index else 0,
             "last_candle_time": last_candle_time,
             "_raw_df": df,
         }
