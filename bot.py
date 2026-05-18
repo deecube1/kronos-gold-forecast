@@ -154,45 +154,30 @@ def send_photo_sync(chat_id, image_bytes, caption=""):
 # ─────────────────────────────────────────────
 
 def get_latest_indicators():
-    """Fetch XAU/USD M5 candles from Finnhub and calculate indicators."""
+    """Fetch XAU/USD M5 candles and calculate indicators."""
     try:
         import pytz
-        import time as time_module
+        import yfinance as yf
 
-        # Finnhub: get last 5 days of M5 candles
-        now = int(time_module.time())
-        five_days_ago = now - (5 * 24 * 60 * 60)
+        # Use XAUUSD=X (spot Gold) — more accurate than GC=F futures
+        df = yf.download("XAUUSD=X", period="5d", interval="5m", progress=False)
 
-        resp = requests.get(
-            f"{FINNHUB_URL}/forex/candle",
-            params={
-                "symbol": "OANDA:XAU_USD",
-                "resolution": "5",
-                "from": five_days_ago,
-                "to": now,
-                "token": FINNHUB_API_KEY,
-            }
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        if df.empty:
+            # Fallback to GC=F futures
+            df = yf.download("GC=F", period="5d", interval="5m", progress=False)
 
-        if data.get("s") != "ok" or not data.get("c"):
-            logger.error(f"Finnhub returned: {data.get('s')}")
+        if df.empty:
+            logger.error("No data from yfinance")
             return None
 
-        # Build DataFrame
-        df = pd.DataFrame({
-            "open":   data["o"],
-            "high":   data["h"],
-            "low":    data["l"],
-            "close":  data["c"],
-            "volume": data["v"],
-        }, index=pd.to_datetime(data["t"], unit="s", utc=True))
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
+        df.columns = [c.lower() for c in df.columns]
         df = df.sort_index().dropna()
 
         if len(df) < 30:
-            logger.error("Not enough candles from Finnhub")
+            logger.error("Not enough candles")
             return None
 
         close  = df["close"]
