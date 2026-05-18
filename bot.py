@@ -167,14 +167,28 @@ def get_latest_indicators():
                 "outputsize": 100,
                 "apikey": TWELVEDATA_API_KEY,
                 "format": "JSON",
+                "timezone": "Asia/Bangkok",
             }
         )
         resp.raise_for_status()
         data = resp.json()
 
         if "values" not in data:
-            logger.error(f"TwelveData error: {data.get('message', 'unknown')}")
+            logger.error(f"TwelveData error: {data}")
             return None
+        rows = data["values"]
+        df_temp = pd.DataFrame(rows)
+        df_temp["datetime"] = pd.to_datetime(df_temp["datetime"])
+        df_temp = df_temp.set_index("datetime").sort_index()
+        for col in ["open", "high", "low", "close"]:
+            if col in df_temp.columns:
+                df_temp[col] = pd.to_numeric(df_temp[col], errors="coerce")
+        if "volume" not in df_temp.columns:
+            df_temp["volume"] = 0
+        else:
+            df_temp["volume"] = pd.to_numeric(df_temp["volume"], errors="coerce").fillna(0)
+        df = df_temp.dropna(subset=["open","high","low","close"])
+        logger.info(f"TwelveData: {len(df)} candles, latest: {df.index[-1]}")
 
         rows = data["values"]
         df = pd.DataFrame(rows)
