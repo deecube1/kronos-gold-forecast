@@ -95,7 +95,7 @@ alert_id_counter = [0]
 # --- User state for multi-step input ---
 user_state = {}
 
-COOLDOWN_MINUTES = 5  # Global cooldown
+COOLDOWN_MINUTES = 1  # 1 minute cooldown — value-change check prevents spam
 
 
 # ─────────────────────────────────────────────
@@ -244,10 +244,14 @@ def get_latest_indicators():
         # Last candle time in ICT (UTC+7)
         try:
             ict = pytz.timezone("Asia/Bangkok")
-            last_ts_ict = df.index[-1].astimezone(ict)
+            last_ts = df.index[-1]
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize("UTC")
+            last_ts_ict = last_ts.astimezone(ict)
             last_candle_time = last_ts_ict.strftime("%b %d, %Y %-I:%M %p ICT")
-        except Exception:
-            last_candle_time = "Unknown"
+        except Exception as e:
+            logger.error(f"Timestamp error: {e}")
+            last_candle_time = str(df.index[-1])
 
         return {
             "price":            safe(latest["close"]),
@@ -265,7 +269,7 @@ def get_latest_indicators():
             "vol_avg":          safe(latest["vol_avg"]) if "vol_avg" in latest.index else 0,
             "vol_ratio":        safe(latest["vol_ratio"]) if "vol_ratio" in latest.index else 0,
             "last_candle_time": last_candle_time,
-            "_raw_df": df,
+            "_raw_df": df.copy(),
         }
     except Exception as e:
         logger.error(f"Market data error: {e}")
