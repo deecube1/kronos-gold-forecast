@@ -211,7 +211,7 @@ def get_latest_indicators():
         close  = df["close"]
         high   = df["high"]
         low    = df["low"]
-        volume = df["volume"]
+        volume = df["volume"] if "volume" in df.columns else pd.Series(0, index=df.index)
 
         df["rsi"]  = ta.momentum.RSIIndicator(close=close, window=14).rsi()
         df["ema9"] = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
