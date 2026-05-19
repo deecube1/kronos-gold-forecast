@@ -241,17 +241,13 @@ def get_latest_indicators():
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
-        # Last candle time in ICT (UTC+7)
-        # TwelveData returns UTC time regardless of account timezone setting
+        # TwelveData returns timestamps in account timezone (Asia/Saigon = ICT)
+        # No conversion needed — just display directly
         try:
-            ict = pytz.timezone("Asia/Bangkok")
             last_ts = df.index[-1]
-            if last_ts.tzinfo is None:
-                # TwelveData timestamps are UTC
-                last_ts = last_ts.tz_localize("UTC")
-            last_ts_ict = last_ts.astimezone(ict)
-            last_candle_time = last_ts_ict.strftime("%b %d, %Y %-I:%M %p ICT")
-            logger.info(f"Last candle UTC: {last_ts} → ICT: {last_candle_time}")
+            # Already in ICT — just format it
+            last_candle_time = last_ts.strftime("%b %d, %Y %-I:%M %p ICT")
+            logger.info(f"Last candle ICT: {last_candle_time}")
         except Exception as e:
             logger.error(f"Timestamp error: {e}")
             last_candle_time = str(df.index[-1])
