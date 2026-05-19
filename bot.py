@@ -242,13 +242,16 @@ def get_latest_indicators():
             return float(val) if val is not None and not pd.isna(val) else None
 
         # Last candle time in ICT (UTC+7)
+        # TwelveData returns UTC time regardless of account timezone setting
         try:
             ict = pytz.timezone("Asia/Bangkok")
             last_ts = df.index[-1]
             if last_ts.tzinfo is None:
+                # TwelveData timestamps are UTC
                 last_ts = last_ts.tz_localize("UTC")
             last_ts_ict = last_ts.astimezone(ict)
             last_candle_time = last_ts_ict.strftime("%b %d, %Y %-I:%M %p ICT")
+            logger.info(f"Last candle UTC: {last_ts} → ICT: {last_candle_time}")
         except Exception as e:
             logger.error(f"Timestamp error: {e}")
             last_candle_time = str(df.index[-1])
@@ -283,7 +286,11 @@ def get_latest_indicators():
 def build_romeo_features(df):
     """Build Romeo V8 features from OHLCV dataframe."""
     d = df.copy()
-    d.columns = [c.capitalize() for c in d.columns]
+    d.columns = [c.lower() for c in d.columns]
+    # Capitalize OHLCV for Romeo V8
+    d = d.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
+    if "Volume" not in d.columns:
+        d["Volume"] = 0
 
     d['SMA_20'] = d['Close'].rolling(20).mean()
     d['SMA_50'] = d['Close'].rolling(50).mean()
