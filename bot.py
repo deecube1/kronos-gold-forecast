@@ -286,11 +286,13 @@ def get_latest_indicators():
 def build_romeo_features(df):
     """Build Romeo V8 features from OHLCV dataframe."""
     d = df.copy()
+    # Normalize all columns to lowercase first
     d.columns = [c.lower() for c in d.columns]
+    # Ensure volume exists
+    if "volume" not in d.columns:
+        d["volume"] = 0
     # Capitalize OHLCV for Romeo V8
     d = d.rename(columns={"open":"Open","high":"High","low":"Low","close":"Close","volume":"Volume"})
-    if "Volume" not in d.columns:
-        d["Volume"] = 0
 
     d['SMA_20'] = d['Close'].rolling(20).mean()
     d['SMA_50'] = d['Close'].rolling(50).mean()
