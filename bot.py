@@ -112,7 +112,7 @@ def submit_runpod_job(pred_len):
     return resp.json()["id"]
 
 
-def poll_runpod_job(job_id, timeout=300, interval=10):
+def poll_runpod_job(job_id, timeout=480, interval=10):  # 8 min timeout
     url = f"{RUNPOD_STATUS_URL}/{job_id}"
     elapsed = 0
     while elapsed < timeout:
@@ -489,8 +489,7 @@ def generate_signal(ind, kronos_bias=None):
         else:
             signals.append("📊 Bollinger: Price within bands")
 
-    if ind["vol_ratio"] and ind["vol_ratio"] >= 2.0:
-        signals.append(f"📊 Volume Spike: {ind['vol_ratio']:.1f}x average — big move possible!")
+    # Volume spike removed - no volume data for XAU/USD from TwelveData
 
     # Custom Gold M5 model
     custom = get_custom_model_signal(ind)
@@ -741,19 +740,39 @@ def check_alerts_thread():
                     f"👉 Tap 📊 Signal for full analysis"
                 )
 
-            # ── Volume Spike ──
-            elif alert["type"] == "volume_spike" and vol_ratio and vol_ratio >= alert["value"]:
-                current_value = round(vol_ratio, 2)
-                triggered = True
-                message = (
-                    f"🚨 <b>VOLUME SPIKE ALERT!</b>\n\n"
-                    f"📊 Unusual volume detected!\n"
-                    f"📈 Volume: <b>{vol_ratio:.1f}x average</b>\n"
-                    f"💰 Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
-                    f"⚡ High activity — possible big move coming!\n"
-                    f"👉 Tap 📊 Signal for full analysis"
-                )
+            # ── MACD Bullish Crossover ──
+            elif alert["type"] == "macd_bull":
+                macd_hist = ind.get("macd_hist")
+                prev_macd_hist = ind.get("prev_macd_hist")
+                if macd_hist and prev_macd_hist and prev_macd_hist < 0 and macd_hist > 0:
+                    current_value = round(macd_hist, 4)
+                    triggered = True
+                    message = (
+                        f"🚨 <b>MACD ALERT!</b>\n\n"
+                        f"📈 MACD Bullish Crossover detected!\n"
+                        f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
+                        f"💰 Price: <b>${price:,.2f}</b>\n"
+                        f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                        f"⚡ Momentum turning BULLISH — consider BUY!\n"
+                        f"👉 Tap 📊 Signal for full analysis"
+                    )
+
+            # ── MACD Bearish Crossover ──
+            elif alert["type"] == "macd_bear":
+                macd_hist = ind.get("macd_hist")
+                prev_macd_hist = ind.get("prev_macd_hist")
+                if macd_hist and prev_macd_hist and prev_macd_hist > 0 and macd_hist < 0:
+                    current_value = round(macd_hist, 4)
+                    triggered = True
+                    message = (
+                        f"🚨 <b>MACD ALERT!</b>\n\n"
+                        f"📉 MACD Bearish Crossover detected!\n"
+                        f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
+                        f"💰 Price: <b>${price:,.2f}</b>\n"
+                        f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                        f"⚠️ Momentum turning BEARISH — consider SELL!\n"
+                        f"👉 Tap 📊 Signal for full analysis"
+                    )
 
             if not triggered:
                 continue
@@ -799,9 +818,10 @@ def add_alert(chat_id, alert_type, value):
 
 def format_alert_label(alert_type, value):
     labels = {
-        "rsi_above": f"🔥 RSI Above {value}",
-        "rsi_below": f"😴 RSI Below {value}",
-        "volume_spike": f"📊 Volume Spike {value}x average",
+        "rsi_above":   f"🔥 RSI Above {value}",
+        "rsi_below":   f"😴 RSI Below {value}",
+        "macd_bull":   f"📈 MACD Bullish Crossover",
+        "macd_bear":   f"📉 MACD Bearish Crossover",
     }
     return labels.get(alert_type, alert_type)
 
@@ -841,8 +861,8 @@ def alert_menu_keyboard():
             InlineKeyboardButton("😴 RSI Below", callback_data="alert_rsi_below"),
         ],
         [
-            InlineKeyboardButton("📊 Volume Spike (2x)", callback_data="alert_vol_2"),
-            InlineKeyboardButton("📊 Volume Spike (3x)", callback_data="alert_vol_3"),
+            InlineKeyboardButton("📈 MACD Bullish Cross", callback_data="alert_macd_bull"),
+            InlineKeyboardButton("📉 MACD Bearish Cross", callback_data="alert_macd_bear"),
         ],
         [
             InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu"),
@@ -986,24 +1006,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML",
         )
 
-    elif data == "alert_vol_2":
-        add_alert(chat_id, "volume_spike", 2.0)
+    elif data == "alert_macd_bull":
+        add_alert(chat_id, "macd_bull", 0)
         await query.edit_message_text(
-            "✅ <b>Volume Spike Alert Set!</b>\n\n"
-            "📊 Will notify when volume is <b>2x above average</b>\n"
-            f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
-            "🔄 Only alerts if volume ratio changes",
+            "✅ <b>MACD Bullish Alert Set!</b>\n\n"
+            "📈 Will notify when MACD crosses <b>ABOVE signal</b>\n"
+            "⚡ Momentum turning bullish\n"
+            f"⏱ Cooldown: {COOLDOWN_MINUTES} min",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
-    elif data == "alert_vol_3":
-        add_alert(chat_id, "volume_spike", 3.0)
+    elif data == "alert_macd_bear":
+        add_alert(chat_id, "macd_bear", 0)
         await query.edit_message_text(
-            "✅ <b>Volume Spike Alert Set!</b>\n\n"
-            "📊 Will notify when volume is <b>3x above average</b>\n"
-            f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
-            "🔄 Only alerts if volume ratio changes",
+            "✅ <b>MACD Bearish Alert Set!</b>\n\n"
+            "📉 Will notify when MACD crosses <b>BELOW signal</b>\n"
+            "⚠️ Momentum turning bearish\n"
+            f"⏱ Cooldown: {COOLDOWN_MINUTES} min",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
