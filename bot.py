@@ -696,6 +696,16 @@ def check_alerts_thread():
     if not active_alerts:
         return
 
+    # Skip API call if ALL alerts are in cooldown
+    now = datetime.utcnow()
+    all_in_cooldown = all(
+        alert.get("cooldown_until") and now < alert["cooldown_until"]
+        for alert in active_alerts.values()
+        if alert["active"]
+    )
+    if all_in_cooldown:
+        return  # No API call needed — all alerts cooling down
+
     try:
         ind = get_latest_indicators()
         if not ind:
