@@ -1014,12 +1014,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "achilles_signal":
         await query.edit_message_text(
-            "🧪 <b>Achilles Signal</b>
-
-"
-            "⚠️ Coming soon — LSTM model training in progress!
-
-"
+            "🧪 <b>Achilles Signal</b>\n\n"
+            "⚠️ Coming soon — LSTM model training in progress!\n\n"
             "This will use the Achilles LSTM model trained specifically on Gold M5 data.",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
@@ -1027,12 +1023,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "achilles_news":
         await query.edit_message_text(
-            "🧪 <b>Achilles + News Sentiment</b>
-
-"
-            "⚠️ Coming soon — FinBERT sentiment analysis in progress!
-
-"
+            "🧪 <b>Achilles + News Sentiment</b>\n\n"
+            "⚠️ Coming soon — FinBERT sentiment analysis in progress!\n\n"
             "This will combine Achilles LSTM + real-time Gold news sentiment from Benzinga & FT.",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
