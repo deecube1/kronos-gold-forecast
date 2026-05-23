@@ -95,7 +95,9 @@ alert_id_counter = [0]
 # --- User state for multi-step input ---
 user_state = {}
 
-COOLDOWN_MINUTES = 1  # 1 minute cooldown — value-change check prevents spam
+COOLDOWN_MINUTES = 1     # check every 1 minute
+MAX_ALERTS_BEFORE_COOLDOWN = 2   # send 2 alerts then 30min cooldown
+LONG_COOLDOWN_MINUTES = 30       # 30min cooldown after 2 alerts
 
 
 # ─────────────────────────────────────────────
@@ -708,6 +710,21 @@ def check_alerts_thread():
             if not alert["active"]:
                 continue
 
+            # ── Long cooldown check (after 2 alerts) ──
+            if alert.get("cooldown_until"):
+                if now < alert["cooldown_until"]:
+                    continue
+                else:
+                    # Cooldown ended — reset counter, keep last value
+                    alert["alert_count"] = 0
+                    alert["cooldown_until"] = None
+
+            # ── 1-minute cooldown between alerts ──
+            if alert["last_triggered"]:
+                elapsed = (now - alert["last_triggered"]).total_seconds() / 60
+                if elapsed < COOLDOWN_MINUTES:
+                    continue
+
             triggered = False
             current_value = None
             message = ""
@@ -777,21 +794,27 @@ def check_alerts_thread():
             if not triggered:
                 continue
 
-            # ── Cooldown check (5 minutes) ──
-            if alert["last_triggered"]:
-                elapsed = (now - alert["last_triggered"]).total_seconds() / 60
-                if elapsed < COOLDOWN_MINUTES:
+            alert_count = alert.get("alert_count", 0)
+
+            # ── Value change check — only for Alert 1 (not Alert 2) ──
+            last_val = alert.get("last_triggered_value")
+            if alert_count == 0:
+                # Alert 1 — only fire if value changed from last cycle
+                if last_val is not None and current_value == last_val:
                     continue
 
-            # ── Value change check — only alert if value changed ──
-            last_val = alert.get("last_triggered_value")
-            if last_val is not None and current_value == last_val:
-                continue
-
             # ── Fire alert ──
+            alert_count += 1
+            alert["alert_count"] = alert_count
             alert["last_triggered"] = now
             alert["last_triggered_value"] = current_value
-            send_message_sync(TELEGRAM_GROUP_ID, message)
+
+            count_msg = f"🔔 Alert {alert_count}/{MAX_ALERTS_BEFORE_COOLDOWN}"
+            if alert_count >= MAX_ALERTS_BEFORE_COOLDOWN:
+                count_msg += f" — 30min cooldown starting"
+                alert["cooldown_until"] = now + timedelta(minutes=LONG_COOLDOWN_MINUTES)
+
+            send_message_sync(TELEGRAM_GROUP_ID, message + f"\n\n{count_msg}")
 
     except Exception as e:
         logger.error(f"Alert check error: {e}")
@@ -807,9 +830,10 @@ def add_alert(chat_id, alert_type, value):
     active_alerts[aid] = {
         "type": alert_type,
         "value": value,
-        "cooldown_minutes": COOLDOWN_MINUTES,
         "last_triggered": None,
         "last_triggered_value": None,
+        "alert_count": 0,          # how many alerts sent in current cycle
+        "cooldown_until": None,    # when long cooldown ends
         "active": True,
         "chat_id": chat_id,
     }
