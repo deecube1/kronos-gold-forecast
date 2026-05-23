@@ -871,12 +871,11 @@ def main_menu_keyboard():
             InlineKeyboardButton("🤖 Signal + AI", callback_data="signal_ai"),
         ],
         [
-            InlineKeyboardButton("📈 Forecast 1h", callback_data="forecast_1"),
-            InlineKeyboardButton("📈 Forecast 2h", callback_data="forecast_2"),
+            InlineKeyboardButton("📈 Forecast 4h", callback_data="forecast_4"),
+            InlineKeyboardButton("🧪 Achilles Signal", callback_data="achilles_signal"),
         ],
         [
-            InlineKeyboardButton("📈 Forecast 3h", callback_data="forecast_3"),
-            InlineKeyboardButton("📈 Forecast 4h", callback_data="forecast_4"),
+            InlineKeyboardButton("🧪 Achilles + News", callback_data="achilles_news"),
         ],
         [
             InlineKeyboardButton("🚨 Set Alert", callback_data="alert_menu"),
@@ -1012,6 +1011,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t = threading.Thread(target=run_forecast_thread, args=(chat_id, pred_len))
         t.daemon = True
         t.start()
+
+    elif data == "achilles_signal":
+        await query.edit_message_text(
+            "🧪 <b>Achilles Signal</b>
+
+"
+            "⚠️ Coming soon — LSTM model training in progress!
+
+"
+            "This will use the Achilles LSTM model trained specifically on Gold M5 data.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
+        )
+
+    elif data == "achilles_news":
+        await query.edit_message_text(
+            "🧪 <b>Achilles + News Sentiment</b>
+
+"
+            "⚠️ Coming soon — FinBERT sentiment analysis in progress!
+
+"
+            "This will combine Achilles LSTM + real-time Gold news sentiment from Benzinga & FT.",
+            parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
+        )
 
     elif data == "alert_menu":
         await query.edit_message_text(
