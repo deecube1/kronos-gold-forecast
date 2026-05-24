@@ -688,19 +688,23 @@ def get_gold_news_sentiment():
         job_id = run_resp.json()["id"]
 
         # Poll for result
-        for _ in range(30):
+        for i in range(30):
             status_resp = requests.get(
                 f"{FINBERT_STATUS_URL}/{job_id}",
                 headers=RUNPOD_HEADERS
             )
             result = status_resp.json()
-            if result.get("status") == "COMPLETED":
+            status = result.get("status")
+            logger.info(f"FinBERT poll {i+1}/30: status={status}")
+            if status == "COMPLETED":
+                logger.info(f"FinBERT output: {result.get('output')}")
                 return result["output"]
-            elif result.get("status") in ("FAILED", "CANCELLED"):
+            elif status in ("FAILED", "CANCELLED"):
                 logger.error(f"FinBERT job failed: {result}")
                 return None
             time_module.sleep(5)
 
+        logger.error("FinBERT timed out after 30 polls")
         return None
 
     except Exception as e:
