@@ -645,6 +645,141 @@ def format_forecast_message(output, pred_len):
 
 
 # ─────────────────────────────────────────────
+# ACHILLES NEWS SENTIMENT
+# ─────────────────────────────────────────────
+
+def get_gold_news_sentiment():
+    """Fetch Gold news and run FinBERT sentiment analysis."""
+    try:
+        import torch
+        from transformers import pipeline
+
+        # Fetch news from Finnhub
+        resp = requests.get(
+            "https://finnhub.io/api/v1/news",
+            params={"category": "general", "token": FINNHUB_API_KEY}
+        )
+        data = resp.json()
+
+        gold_keywords = ['gold', 'xau', 'bullion', 'precious metal',
+                         'fed', 'inflation', 'rate cut', 'dollar', 'yields']
+
+        gold_news = []
+        for item in data:
+            headline = item.get('headline', '')
+            summary  = item.get('summary', '')
+            if any(kw in headline.lower() or kw in summary.lower() for kw in gold_keywords):
+                gold_news.append(headline)
+
+        if not gold_news:
+            return None
+
+        # Load FinBERT on demand
+        logger.info("Loading FinBERT model...")
+        finbert = pipeline(
+            "text-classification",
+            model="ProsusAI/finbert",
+            device=0 if torch.cuda.is_available() else -1
+        )
+
+        results = finbert(gold_news[:10])
+
+        def gold_adjusted_sentiment(headline, result):
+            label = result['label']
+            h = headline.lower()
+            dollar_bearish = any(w in h for w in ['dollar falls', 'dollar weakens', 'dollar drops', 'dollar dips'])
+            yields_down    = any(w in h for w in ['yields fall', 'yields drop', 'rate cut', 'yields ease'])
+            gold_bullish   = any(w in h for w in ['gold rises', 'gold surges', 'gold hits high', 'gold gains'])
+            if dollar_bearish or yields_down or gold_bullish:
+                if label == 'negative': label = 'positive'
+                elif label == 'positive': label = 'negative'
+            return label
+
+        scores = []
+        headlines_out = []
+        for headline, result in zip(gold_news[:10], results):
+            gold_label = gold_adjusted_sentiment(headline, result)
+            scores.append(1 if gold_label == 'positive' else -1 if gold_label == 'negative' else 0)
+            emoji = "📈" if gold_label == "positive" else "📉" if gold_label == "negative" else "➡️"
+            headlines_out.append(f"{emoji} {headline[:80]}")
+
+        avg = sum(scores) / len(scores) if scores else 0
+        if avg > 0.2:
+            overall = "📈 BULLISH"
+        elif avg < -0.2:
+            overall = "📉 BEARISH"
+        else:
+            overall = "➡️ NEUTRAL"
+
+        return {
+            "overall": overall,
+            "score": round(avg, 2),
+            "count": len(gold_news),
+            "headlines": headlines_out[:5],
+        }
+
+    except Exception as e:
+        logger.error(f"FinBERT error: {e}")
+        return None
+
+
+def run_achilles_news_thread(chat_id):
+    """Run Achilles + News sentiment in background thread."""
+    try:
+        send_message_sync(chat_id, "⏳ Fetching Gold news + running FinBERT analysis...")
+
+        sentiment = get_gold_news_sentiment()
+
+        if not sentiment:
+            send_message_sync(chat_id, "❌ Could not fetch Gold news. Try again later.")
+            return
+
+        # Also get current TA signal
+        ind = get_latest_indicators()
+        sig = generate_signal(ind) if ind else None
+
+        lines = [
+            "🧪 <b>Achilles + News Sentiment</b>",
+            "",
+            f"🌍 Overall Gold Sentiment: <b>{sentiment['overall']}</b>",
+            f"📊 Score: {sentiment['score']:+.2f} | Articles: {sentiment['count']}",
+            "",
+            "<b>Top Headlines:</b>",
+        ]
+        for h in sentiment['headlines']:
+            lines.append(f"  {h}")
+
+        if sig:
+            lines += [
+                "",
+                "<b>Combined with TA Signal:</b>",
+                f"  RSI: {ind['rsi']:.1f} | Price: ${ind['price']:,.2f}",
+            ]
+
+            # Combine news + TA
+            news_score = sentiment['score']
+            ta_score = sig['score'] if 'score' in sig else 0
+            combined = news_score + (ta_score * 0.3)
+
+            if combined > 0.3:
+                combined_signal = "✅ BUY"
+            elif combined < -0.3:
+                combined_signal = "🔴 SELL"
+            else:
+                combined_signal = "⏸ WAIT"
+
+            lines += [
+                f"  Combined Signal: <b>{combined_signal}</b>",
+            ]
+
+        send_message_sync(chat_id, "
+".join(lines))
+
+    except Exception as e:
+        send_message_sync(chat_id, f"❌ Error: {str(e)}")
+
+
+# ─────────────────────────────────────────────
 # BACKGROUND TASKS
 # ─────────────────────────────────────────────
 
@@ -872,9 +1007,6 @@ def main_menu_keyboard():
         ],
         [
             InlineKeyboardButton("📈 Forecast 4h", callback_data="forecast_4"),
-            InlineKeyboardButton("🧪 Achilles Signal", callback_data="achilles_signal"),
-        ],
-        [
             InlineKeyboardButton("🧪 Achilles + News", callback_data="achilles_news"),
         ],
         [
@@ -1012,23 +1144,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t.daemon = True
         t.start()
 
-    elif data == "achilles_signal":
-        await query.edit_message_text(
-            "🧪 <b>Achilles Signal</b>\n\n"
-            "⚠️ Coming soon — LSTM model training in progress!\n\n"
-            "This will use the Achilles LSTM model trained specifically on Gold M5 data.",
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(),
-        )
-
     elif data == "achilles_news":
-        await query.edit_message_text(
-            "🧪 <b>Achilles + News Sentiment</b>\n\n"
-            "⚠️ Coming soon — FinBERT sentiment analysis in progress!\n\n"
-            "This will combine Achilles LSTM + real-time Gold news sentiment from Benzinga & FT.",
-            parse_mode="HTML",
-            reply_markup=main_menu_keyboard(),
-        )
+        await query.edit_message_text("⏳ Fetching Gold news + running FinBERT (30-60 sec)...")
+        t = threading.Thread(target=run_achilles_news_thread, args=(chat_id,))
+        t.daemon = True
+        t.start()
 
     elif data == "alert_menu":
         await query.edit_message_text(
