@@ -11,5 +11,3 @@ scikit-learn
 joblib
 lightgbm
 catboost
-transformers
-torch

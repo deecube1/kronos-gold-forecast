@@ -37,6 +37,10 @@ WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 TWELVEDATA_API_KEY = os.environ["TWELVEDATA_API_KEY"]
 TWELVEDATA_URL = "https://api.twelvedata.com"
 
+FINBERT_ENDPOINT_ID = os.environ.get("FINBERT_ENDPOINT_ID", "")
+FINBERT_RUN_URL    = f"https://api.runpod.ai/v2/{FINBERT_ENDPOINT_ID}/run"
+FINBERT_STATUS_URL = f"https://api.runpod.ai/v2/{FINBERT_ENDPOINT_ID}/status"
+
 RUNPOD_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/run"
 RUNPOD_STATUS_URL = f"https://api.runpod.ai/v2/{RUNPOD_ENDPOINT_ID}/status"
 RUNPOD_HEADERS = {
@@ -649,10 +653,9 @@ def format_forecast_message(output, pred_len):
 # ─────────────────────────────────────────────
 
 def get_gold_news_sentiment():
-    """Fetch Gold news and run FinBERT sentiment analysis."""
+    """Fetch Gold news and run FinBERT via RunPod."""
     try:
-        import torch
-        from transformers import pipeline
+        import time as time_module
 
         # Fetch news from Finnhub
         resp = requests.get(
@@ -674,52 +677,33 @@ def get_gold_news_sentiment():
         if not gold_news:
             return None
 
-        # Load FinBERT on demand
-        logger.info("Loading FinBERT model...")
-        finbert = pipeline(
-            "text-classification",
-            model="ProsusAI/finbert",
-            device=0 if torch.cuda.is_available() else -1
+        logger.info(f"Calling FinBERT RunPod with {len(gold_news)} headlines...")
+        run_resp = requests.post(
+            FINBERT_RUN_URL,
+            json={"input": {"headlines": gold_news[:10]}},
+            headers=RUNPOD_HEADERS
         )
+        run_resp.raise_for_status()
+        job_id = run_resp.json()["id"]
 
-        results = finbert(gold_news[:10])
+        # Poll for result
+        for _ in range(30):
+            status_resp = requests.get(
+                f"{FINBERT_STATUS_URL}/{job_id}",
+                headers=RUNPOD_HEADERS
+            )
+            result = status_resp.json()
+            if result.get("status") == "COMPLETED":
+                return result["output"]
+            elif result.get("status") in ("FAILED", "CANCELLED"):
+                logger.error(f"FinBERT job failed: {result}")
+                return None
+            time_module.sleep(5)
 
-        def gold_adjusted_sentiment(headline, result):
-            label = result['label']
-            h = headline.lower()
-            dollar_bearish = any(w in h for w in ['dollar falls', 'dollar weakens', 'dollar drops', 'dollar dips'])
-            yields_down    = any(w in h for w in ['yields fall', 'yields drop', 'rate cut', 'yields ease'])
-            gold_bullish   = any(w in h for w in ['gold rises', 'gold surges', 'gold hits high', 'gold gains'])
-            if dollar_bearish or yields_down or gold_bullish:
-                if label == 'negative': label = 'positive'
-                elif label == 'positive': label = 'negative'
-            return label
-
-        scores = []
-        headlines_out = []
-        for headline, result in zip(gold_news[:10], results):
-            gold_label = gold_adjusted_sentiment(headline, result)
-            scores.append(1 if gold_label == 'positive' else -1 if gold_label == 'negative' else 0)
-            emoji = "📈" if gold_label == "positive" else "📉" if gold_label == "negative" else "➡️"
-            headlines_out.append(f"{emoji} {headline[:80]}")
-
-        avg = sum(scores) / len(scores) if scores else 0
-        if avg > 0.2:
-            overall = "📈 BULLISH"
-        elif avg < -0.2:
-            overall = "📉 BEARISH"
-        else:
-            overall = "➡️ NEUTRAL"
-
-        return {
-            "overall": overall,
-            "score": round(avg, 2),
-            "count": len(gold_news),
-            "headlines": headlines_out[:5],
-        }
+        return None
 
     except Exception as e:
-        logger.error(f"FinBERT error: {e}")
+        logger.error(f"FinBERT RunPod error: {e}")
         return None
 
 
