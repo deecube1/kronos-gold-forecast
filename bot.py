@@ -34,6 +34,7 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
 WEBHOOK_URL = os.environ["WEBHOOK_URL"]
 
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY", "")
 TWELVEDATA_API_KEY = os.environ["TWELVEDATA_API_KEY"]
 TWELVEDATA_URL = "https://api.twelvedata.com"
 
