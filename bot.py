@@ -772,8 +772,7 @@ def run_achilles_news_thread(chat_id):
                 f"  Combined Signal: <b>{combined_signal}</b>",
             ]
 
-        send_message_sync(chat_id, "
-".join(lines))
+        send_message_sync(chat_id, "\n".join(lines))
 
     except Exception as e:
         send_message_sync(chat_id, f"❌ Error: {str(e)}")
