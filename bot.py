@@ -654,31 +654,55 @@ def format_forecast_message(output, pred_len):
 # ─────────────────────────────────────────────
 
 def get_gold_news_sentiment():
-    """Fetch Gold news and run FinBERT via RunPod."""
+    """Fetch Gold news (GLD + general) and run FinBERT via RunPod."""
     try:
         import time as time_module
+        from datetime import datetime, timedelta
 
-        # Fetch news from Finnhub
-        resp = requests.get(
+        today = datetime.now().strftime('%Y-%m-%d')
+        week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+
+        # Fetch GLD-specific news (targeted)
+        gld_resp = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={
+                "symbol": "GLD",
+                "from": week_ago,
+                "to": today,
+                "token": FINNHUB_API_KEY
+            }
+        )
+        gld_news = [item.get('headline', '') for item in gld_resp.json()
+                    if item.get('headline')]
+
+        # Fetch general Gold-related news (broader)
+        general_resp = requests.get(
             "https://finnhub.io/api/v1/news",
             params={"category": "general", "token": FINNHUB_API_KEY}
         )
-        data = resp.json()
-
         gold_keywords = ['gold', 'xau', 'bullion', 'precious metal',
                          'fed', 'inflation', 'rate cut', 'dollar', 'yields']
+        general_news = [
+            item.get('headline', '') for item in general_resp.json()
+            if any(kw in item.get('headline', '').lower() or
+                   kw in item.get('summary', '').lower()
+                   for kw in gold_keywords)
+        ]
 
+        # Combine and deduplicate
+        seen = set()
         gold_news = []
-        for item in data:
-            headline = item.get('headline', '')
-            summary  = item.get('summary', '')
-            if any(kw in headline.lower() or kw in summary.lower() for kw in gold_keywords):
-                gold_news.append(headline)
+        for h in gld_news + general_news:
+            if h and h not in seen:
+                seen.add(h)
+                gold_news.append(h)
 
         if not gold_news:
             return None
 
-        logger.info(f"Calling FinBERT RunPod with {len(gold_news)} headlines...")
+        logger.info(f"Gold news: {len(gld_news)} GLD + {len(general_news)} general = {len(gold_news)} unique")
+
+        # Call FinBERT on RunPod
         run_resp = requests.post(
             FINBERT_RUN_URL,
             json={"input": {"headlines": gold_news[:10]}},
