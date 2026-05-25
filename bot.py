@@ -877,8 +877,6 @@ def check_economic_calendar():
                 f"⚠️ <b>Gold volatility expected!</b>\n"
                 f"Consider managing open positions."
             )
-                f"Consider managing open positions."
-            )
 
             send_message_sync(TELEGRAM_GROUP_ID, msg)
             logger.info(f"Economic calendar alert sent: {event_name}")
