@@ -119,7 +119,7 @@ def submit_runpod_job(pred_len):
     return resp.json()["id"]
 
 
-def poll_runpod_job(job_id, timeout=480, interval=10):  # 8 min timeout
+def poll_runpod_job(job_id, timeout=720, interval=10):  # 12 min timeout
     url = f"{RUNPOD_STATUS_URL}/{job_id}"
     elapsed = 0
     while elapsed < timeout:
