@@ -792,6 +792,108 @@ def run_achilles_news_thread(chat_id):
 
 
 # ─────────────────────────────────────────────
+# ECONOMIC CALENDAR ALERTS
+# ─────────────────────────────────────────────
+
+# Track which events we've already alerted about
+_alerted_events = set()
+
+def check_economic_calendar():
+    """Check Finnhub economic calendar for upcoming high/medium impact USD events."""
+    try:
+        import pytz
+        from datetime import datetime, timedelta
+
+        ict = pytz.timezone("Asia/Bangkok")
+        utc = pytz.utc
+        now_utc = datetime.now(utc)
+        today = now_utc.strftime('%Y-%m-%d')
+        tomorrow = (now_utc + timedelta(days=1)).strftime('%Y-%m-%d')
+
+        resp = requests.get(
+            "https://finnhub.io/api/v1/calendar/economic",
+            params={
+                "from": today,
+                "to": tomorrow,
+                "token": FINNHUB_API_KEY
+            }
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        events = data.get("economicCalendar", [])
+
+        # Filter USD high/medium impact events only
+        gold_countries = ["US"]  # USD events move Gold most
+        for event in events:
+            country = event.get("country", "")
+            impact = event.get("impact", "low")
+            event_name = event.get("event", "")
+            event_time_str = event.get("time", "")
+
+            if country not in gold_countries:
+                continue
+            if impact not in ("high", "medium"):
+                continue
+
+            # Parse event time
+            try:
+                event_time = datetime.strptime(event_time_str, "%Y-%m-%d %H:%M:%S")
+                event_time = utc.localize(event_time)
+            except:
+                continue
+
+            # Check if event is 15-60 minutes away
+            minutes_until = (event_time - now_utc).total_seconds() / 60
+
+            if not (15 <= minutes_until <= 60):
+                continue
+
+            # Avoid duplicate alerts
+            event_key = f"{event_time_str}_{event_name}"
+            if event_key in _alerted_events:
+                continue
+
+            _alerted_events.add(event_key)
+
+            # Convert to ICT
+            event_time_ict = event_time.astimezone(ict)
+            time_str = event_time_ict.strftime("%-I:%M %p ICT")
+
+            # Build alert message
+            impact_emoji = "🔴" if impact == "high" else "🟠"
+            prev = event.get("prev")
+            estimate = event.get("estimate")
+            unit = event.get("unit", "")
+
+            prev_str = f"{prev}{unit}" if prev is not None else "N/A"
+            est_str = f"{estimate}{unit}" if estimate is not None else "N/A"
+
+            msg = (
+                f"📅 <b>ECONOMIC EVENT ALERT</b>
+
+"
+                f"{impact_emoji} <b>{event_name}</b>
+"
+                f"🇺🇸 USD | {impact.upper()} IMPACT
+"
+                f"⏰ In ~{int(minutes_until)} min ({time_str})
+"
+                f"📊 Previous: {prev_str} | Forecast: {est_str}
+
+"
+                f"⚠️ <b>Gold volatility expected!</b>
+"
+                f"Consider managing open positions."
+            )
+
+            send_message_sync(TELEGRAM_GROUP_ID, msg)
+            logger.info(f"Economic calendar alert sent: {event_name}")
+
+    except Exception as e:
+        logger.error(f"Economic calendar error: {e}")
+
+
+# ─────────────────────────────────────────────
 # BACKGROUND TASKS
 # ─────────────────────────────────────────────
 
@@ -1264,6 +1366,7 @@ def main():
     # Alert scheduler — every 1 minute
     scheduler = BackgroundScheduler()
     scheduler.add_job(check_alerts_thread, "interval", minutes=1)
+    scheduler.add_job(check_economic_calendar, "interval", minutes=5)
     scheduler.start()
 
     port = int(os.environ.get("PORT", 8080))
