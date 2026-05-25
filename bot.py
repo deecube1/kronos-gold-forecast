@@ -869,20 +869,14 @@ def check_economic_calendar():
             est_str = f"{estimate}{unit}" if estimate is not None else "N/A"
 
             msg = (
-                f"📅 <b>ECONOMIC EVENT ALERT</b>
-
-"
-                f"{impact_emoji} <b>{event_name}</b>
-"
-                f"🇺🇸 USD | {impact.upper()} IMPACT
-"
-                f"⏰ In ~{int(minutes_until)} min ({time_str})
-"
-                f"📊 Previous: {prev_str} | Forecast: {est_str}
-
-"
-                f"⚠️ <b>Gold volatility expected!</b>
-"
+                f"📅 <b>ECONOMIC EVENT ALERT</b>\n\n"
+                f"{impact_emoji} <b>{event_name}</b>\n"
+                f"🇺🇸 USD | {impact.upper()} IMPACT\n"
+                f"⏰ In ~{int(minutes_until)} min ({time_str})\n"
+                f"📊 Previous: {prev_str} | Forecast: {est_str}\n\n"
+                f"⚠️ <b>Gold volatility expected!</b>\n"
+                f"Consider managing open positions."
+            )
                 f"Consider managing open positions."
             )
 
