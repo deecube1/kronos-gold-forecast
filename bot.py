@@ -989,7 +989,7 @@ def check_alerts_thread():
                     f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
                     f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
                     f"💰 Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                    f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
                     f"⚠️ Possible reversal — consider SELL\n"
                     f"👉 Tap 📊 Signal for full analysis"
                 )
@@ -1003,7 +1003,7 @@ def check_alerts_thread():
                     f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
                     f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
                     f"💰 Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                    f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
                     f"⚡ Possible bounce — consider BUY\n"
                     f"👉 Tap 📊 Signal for full analysis"
                 )
@@ -1020,7 +1020,7 @@ def check_alerts_thread():
                         f"📈 MACD Bullish Crossover detected!\n"
                         f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
                         f"💰 Price: <b>${price:,.2f}</b>\n"
-                        f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                        f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
                         f"⚡ Momentum turning BULLISH — consider BUY!\n"
                         f"👉 Tap 📊 Signal for full analysis"
                     )
@@ -1037,7 +1037,7 @@ def check_alerts_thread():
                         f"📉 MACD Bearish Crossover detected!\n"
                         f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
                         f"💰 Price: <b>${price:,.2f}</b>\n"
-                        f"🕐 {datetime.now().strftime('%-I:%M %p')} ICT\n\n"
+                        f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
                         f"⚠️ Momentum turning BEARISH — consider SELL!\n"
                         f"👉 Tap 📊 Signal for full analysis"
                     )
