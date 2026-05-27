@@ -5,6 +5,7 @@ import logging
 import requests
 import asyncio
 import threading
+import pytz
 from datetime import datetime, timedelta
 
 import ta
@@ -934,6 +935,7 @@ def run_signal_thread(chat_id, use_kronos=True):
 # ─────────────────────────────────────────────
 
 def check_alerts_thread():
+    import pytz
     if not active_alerts:
         return
 
