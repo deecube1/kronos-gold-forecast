@@ -8,6 +8,12 @@ import threading
 import pytz
 from datetime import datetime, timedelta
 
+# TwelveData cache — reuse data within same minute
+_cached_indicators = None
+_cache_timestamp = 0
+_cache_lock = threading.Lock()
+_cache_ttl = 60  # cache for 60 seconds
+
 import ta
 import pandas as pd
 import numpy as np
@@ -163,7 +169,12 @@ def send_photo_sync(chat_id, image_bytes, caption=""):
 
 def get_latest_indicators():
     """Fetch XAU/USD M5 candles from TwelveData (real-time, no delay)."""
+    global _cached_indicators, _cache_timestamp
     try:
+        # Return cached data if fresh (within 60 seconds)
+        with _cache_lock:
+            if _cached_indicators and (time.time() - _cache_timestamp) < _cache_ttl:
+                return _cached_indicators
         import pytz
 
         # TwelveData — real-time XAU/USD M5
@@ -260,7 +271,7 @@ def get_latest_indicators():
             logger.error(f"Timestamp error: {e}")
             last_candle_time = str(df.index[-1])
 
-        return {
+        result = {
             "price":            safe(latest["close"]),
             "rsi":              safe(latest["rsi"]),
             "ema9":             safe(latest["ema9"]),
@@ -278,6 +289,11 @@ def get_latest_indicators():
             "last_candle_time": last_candle_time,
             "_raw_df": df.copy(),
         }
+        # Cache for 60 seconds
+        with _cache_lock:
+            _cached_indicators = result
+            _cache_timestamp = time.time()
+        return result
     except Exception as e:
         logger.error(f"Market data error: {e}")
         return None
