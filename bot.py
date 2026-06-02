@@ -232,7 +232,15 @@ def get_latest_indicators():
         low    = df["low"]
         volume = df["volume"] if "volume" in df.columns else pd.Series(0, index=df.index)
 
-        df["rsi"]  = ta.momentum.RSIIndicator(close=close, window=14).rsi()
+        # RSI using Wilder's smoothing (matches MT5/Exness exactly)
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        # First average using simple mean (seed)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, float('inf'))
+        df["rsi"] = 100 - (100 / (1 + rs))
         df["ema9"] = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
         df["ema21"]= ta.trend.EMAIndicator(close=close, window=21).ema_indicator()
 
@@ -453,6 +461,93 @@ def get_custom_model_signal(ind):
 # ─────────────────────────────────────────────
 # SIGNAL GENERATION
 # ─────────────────────────────────────────────
+
+def get_macro_context():
+    """Fetch DXY and US10Y from DBnomics (free, no key needed). Cache 6 hours."""
+    try:
+        # US Dollar Index (DXY)
+        dxy_resp = requests.get(
+            "https://api.db.nomics.world/v22/series/FRED/DTWEXBGS?observations=1&limit=3",
+            timeout=5
+        )
+        dxy_data = dxy_resp.json()
+        dxy_docs = dxy_data.get("series", {}).get("docs", [{}])[0]
+        dxy_vals = dxy_docs.get("value", [])
+        dxy = float(dxy_vals[-1]) if dxy_vals else None
+
+        # US 10Y Treasury Yield
+        y10_resp = requests.get(
+            "https://api.db.nomics.world/v22/series/FRED/DGS10?observations=1&limit=3",
+            timeout=5
+        )
+        y10_data = y10_resp.json()
+        y10_docs = y10_data.get("series", {}).get("docs", [{}])[0]
+        y10_vals = y10_docs.get("value", [])
+        y10 = float(y10_vals[-1]) if y10_vals else None
+
+        if not dxy or not y10:
+            return None
+
+        # Gold bias based on macro
+        dxy_bias = "🔴 Bearish" if dxy > 104 else "🟢 Bullish" if dxy < 101 else "⚪ Neutral"
+        y10_bias = "🔴 Bearish" if y10 > 4.5 else "🟢 Bullish" if y10 < 4.0 else "⚪ Neutral"
+
+        return {
+            "dxy": round(dxy, 2),
+            "dxy_bias": dxy_bias,
+            "y10": round(y10, 2),
+            "y10_bias": y10_bias,
+        }
+    except Exception as e:
+        logger.error(f"Macro context error: {e}")
+        return None
+
+
+ADANOS_API_KEY = os.environ.get("ADANOS_API_KEY", "")
+ADANOS_BASE = "https://api.adanos.org/reddit/stocks/v1"
+
+def get_adanos_sentiment():
+    """Fetch GLD Reddit sentiment from Adanos."""
+    if not ADANOS_API_KEY:
+        return None
+    try:
+        headers = {"X-API-Key": ADANOS_API_KEY}
+        resp = requests.get(f"{ADANOS_BASE}/stock/GLD", headers=headers, timeout=10)
+        if resp.status_code == 404:
+            # GLD not found, try gold-related search
+            resp = requests.get(f"{ADANOS_BASE}/market-sentiment", headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+
+        score = data.get("sentiment_score", 0)
+        bullish = data.get("bullish_pct", 0)
+        bearish = data.get("bearish_pct", 0)
+        buzz = data.get("buzz_score", 0)
+        trend = data.get("trend", "stable")
+        mentions = data.get("mentions", 0)
+
+        if score > 0.1:
+            overall = "📈 BULLISH"
+        elif score < -0.1:
+            overall = "📉 BEARISH"
+        else:
+            overall = "➡️ NEUTRAL"
+
+        trend_emoji = "📈" if trend == "rising" else "📉" if trend == "falling" else "➡️"
+
+        return {
+            "overall": overall,
+            "score": round(score, 2),
+            "bullish_pct": bullish,
+            "bearish_pct": bearish,
+            "buzz_score": buzz,
+            "trend": f"{trend_emoji} {trend.capitalize()}",
+            "mentions": mentions,
+        }
+    except Exception as e:
+        logger.error(f"Adanos error: {e}")
+        return None
+
 
 def generate_signal(ind, kronos_bias=None):
     if not ind:
@@ -756,40 +851,71 @@ def get_gold_news_sentiment():
 def run_achilles_news_thread(chat_id):
     """Run Achilles + News sentiment in background thread."""
     try:
-        send_message_sync(chat_id, "⏳ Fetching Gold news + running FinBERT analysis...")
+        send_message_sync(chat_id, "⏳ Fetching Gold news + running FinBERT & Reddit sentiment...")
 
-        sentiment = get_gold_news_sentiment()
+        # Run FinBERT and Adanos in parallel
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            finbert_future = executor.submit(get_gold_news_sentiment)
+            adanos_future  = executor.submit(get_adanos_sentiment)
+            macro_future   = executor.submit(get_macro_context)
 
-        if not sentiment:
-            send_message_sync(chat_id, "❌ Could not fetch Gold news. Try again later.")
+        sentiment = finbert_future.result()
+        adanos    = adanos_future.result()
+        macro     = macro_future.result()
+
+        if not sentiment and not adanos:
+            send_message_sync(chat_id, "❌ Could not fetch Gold sentiment. Try again later.")
             return
 
         # Also get current TA signal
         ind = get_latest_indicators()
         sig = generate_signal(ind) if ind else None
 
-        lines = [
-            "🧪 <b>Achilles + News Sentiment</b>",
-            "",
-            f"🌍 Overall Gold Sentiment: <b>{sentiment['overall']}</b>",
-            f"📊 Score: {sentiment['score']:+.2f} | Articles: {sentiment['count']}",
-            "",
-            "<b>Top Headlines:</b>",
-        ]
-        for h in sentiment['headlines']:
-            lines.append(f"  {h}")
+        lines = ["🧪 <b>Achilles + News Sentiment</b>", ""]
 
-        if sig:
+        # FinBERT news sentiment
+        if sentiment:
             lines += [
+                f"📰 <b>News Sentiment (FinBERT):</b> {sentiment['overall']}",
+                f"📊 Score: {sentiment['score']:+.2f} | Articles: {sentiment['count']}",
                 "",
+                "<b>Top Headlines:</b>",
+            ]
+            for h in sentiment['headlines']:
+                lines.append(f"  {h}")
+            lines.append("")
+
+        # Adanos Reddit/X sentiment
+        if adanos:
+            lines += [
+                f"🌐 <b>Reddit Sentiment (Adanos):</b> {adanos['overall']}",
+                f"📊 Score: {adanos['score']:+.2f} | Buzz: {adanos['buzz_score']:.0f}/100",
+                f"📈 Bullish: {adanos['bullish_pct']}% | 📉 Bearish: {adanos['bearish_pct']}%",
+                f"📣 Mentions: {adanos['mentions']} | Trend: {adanos['trend']}",
+                "",
+            ]
+
+        # Macro context
+        if macro:
+            lines += [
+                "<b>🌍 Macro Context (for Gold):</b>",
+                f"  💵 DXY: {macro['dxy']} → {macro['dxy_bias']} for Gold",
+                f"  📈 US10Y: {macro['y10']}% → {macro['y10_bias']} for Gold",
+                "",
+            ]
+
+        # Combined TA signal
+        if sig and ind:
+            lines += [
                 "<b>Combined with TA Signal:</b>",
                 f"  RSI: {ind['rsi']:.1f} | Price: ${ind['price']:,.2f}",
             ]
 
-            # Combine news + TA
-            news_score = sentiment['score']
+            news_score = sentiment['score'] if sentiment else 0
+            adanos_score = adanos['score'] if adanos else 0
             ta_score = sig['score'] if 'score' in sig else 0
-            combined = news_score + (ta_score * 0.3)
+            combined = (news_score * 0.4) + (adanos_score * 0.3) + (ta_score * 0.3)
 
             if combined > 0.3:
                 combined_signal = "✅ BUY"
@@ -798,9 +924,7 @@ def run_achilles_news_thread(chat_id):
             else:
                 combined_signal = "⏸ WAIT"
 
-            lines += [
-                f"  Combined Signal: <b>{combined_signal}</b>",
-            ]
+            lines.append(f"  Combined Signal: <b>{combined_signal}</b>")
 
         send_message_sync(chat_id, "\n".join(lines))
 
