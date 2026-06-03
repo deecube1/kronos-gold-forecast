@@ -236,11 +236,12 @@ def get_latest_indicators():
         delta = close.diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        # First average using simple mean (seed)
         avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
         avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
-        rs = avg_gain / avg_loss.replace(0, float('inf'))
+        avg_loss_safe = avg_loss.replace(0, 1e-10)
+        rs = avg_gain / avg_loss_safe
         df["rsi"] = 100 - (100 / (1 + rs))
+        df["rsi"] = df["rsi"].fillna(50)  # fallback to neutral if NaN
         df["ema9"] = ta.trend.EMAIndicator(close=close, window=9).ema_indicator()
         df["ema21"]= ta.trend.EMAIndicator(close=close, window=21).ema_indicator()
 
