@@ -1232,10 +1232,10 @@ def check_alerts_thread():
                     current_value = round(rsi, 1)
                     triggered = True
                     message = (
-                        f"🚨 <b>RSI ALERT!</b>\n\n"
+                        f"🚨 <b>GOLD RSI ALERT!</b> 🥇\n\n"
                         f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
                         f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
-                        f"💰 Price: <b>${price:,.2f}</b>\n"
+                        f"💰 XAU/USD: <b>${price:,.2f}</b>\n"
                         f"🕐 {ict_time} ICT\n\n"
                         f"⚠️ Possible reversal — consider SELL\n"
                         f"👉 Tap 📊 Signal for full analysis"
@@ -1246,10 +1246,10 @@ def check_alerts_thread():
                     current_value = round(rsi, 1)
                     triggered = True
                     message = (
-                        f"🚨 <b>RSI ALERT!</b>\n\n"
+                        f"🚨 <b>GOLD RSI ALERT!</b> 🥇\n\n"
                         f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
                         f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
-                        f"💰 Price: <b>${price:,.2f}</b>\n"
+                        f"💰 XAU/USD: <b>${price:,.2f}</b>\n"
                         f"🕐 {ict_time} ICT\n\n"
                         f"⚡ Possible bounce — consider BUY\n"
                         f"👉 Tap 📊 Signal for full analysis"
@@ -1299,11 +1299,13 @@ def check_alerts_thread():
                     current_value = round(btc_rsi, 1)
                     triggered = True
                     message = (
-                        f"🚨 <b>BTC ALERT!</b>\n\n"
-                        f"📊 RSI is <b>ABOVE {alert['value']}</b>\n"
-                        f"📈 Current RSI: <b>{btc_rsi:.1f}</b>\n"
-                        f"💰 Price: <b>${btc_price:,.2f}</b>\n"
-                        f"🕐 {ict_time} ICT"
+                        f"🚨 <b>BTC RSI ALERT!</b> 🪙\n\n"
+                        f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
+                        f"📊 Current RSI: <b>{btc_rsi:.1f}</b>\n"
+                        f"💰 BTC/USD: <b>${btc_price:,.2f}</b>\n"
+                        f"🕐 {ict_time} ICT\n\n"
+                        f"⚠️ Possible reversal — consider SELL\n"
+                        f"👉 Tap 📊 Signal for full analysis"
                     )
 
             # ── BTC RSI Below ──
@@ -1316,11 +1318,13 @@ def check_alerts_thread():
                     current_value = round(btc_rsi, 1)
                     triggered = True
                     message = (
-                        f"🚨 <b>BTC ALERT!</b>\n\n"
-                        f"📊 RSI is <b>BELOW {alert['value']}</b>\n"
-                        f"📈 Current RSI: <b>{btc_rsi:.1f}</b>\n"
-                        f"💰 Price: <b>${btc_price:,.2f}</b>\n"
-                        f"🕐 {ict_time} ICT"
+                        f"🚨 <b>BTC RSI ALERT!</b> 🪙\n\n"
+                        f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
+                        f"📊 Current RSI: <b>{btc_rsi:.1f}</b>\n"
+                        f"💰 BTC/USD: <b>${btc_price:,.2f}</b>\n"
+                        f"🕐 {ict_time} ICT\n\n"
+                        f"⚡ Possible bounce — consider BUY\n"
+                        f"👉 Tap 📊 Signal for full analysis"
                     )
 
             if not triggered:
