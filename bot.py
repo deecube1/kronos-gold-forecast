@@ -14,6 +14,11 @@ _cache_timestamp = 0
 _cache_lock = threading.Lock()
 _cache_ttl = 60  # cache for 60 seconds
 
+# BTC/USD M15 cache — independent from Gold cache to avoid rate-limit conflicts
+_cached_btc = None
+_btc_cache_timestamp = 0
+_btc_cache_lock = threading.Lock()
+
 import ta
 import pandas as pd
 import numpy as np
@@ -305,6 +310,88 @@ def get_latest_indicators():
         return result
     except Exception as e:
         logger.error(f"Market data error: {e}")
+        return None
+
+
+def get_btc_indicators():
+    """Fetch BTC/USD M15 candles from TwelveData. Independent cache from Gold."""
+    global _cached_btc, _btc_cache_timestamp
+    try:
+        with _btc_cache_lock:
+            if _cached_btc and (time.time() - _btc_cache_timestamp) < _cache_ttl:
+                return _cached_btc
+
+        resp = requests.get(
+            f"{TWELVEDATA_URL}/time_series",
+            params={
+                "symbol": "BTC/USD",
+                "interval": "15min",
+                "outputsize": 100,
+                "apikey": TWELVEDATA_API_KEY,
+                "format": "JSON",
+                "timezone": "Asia/Bangkok",
+            }
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        if "values" not in data:
+            logger.error(f"TwelveData BTC error: {data}")
+            return None
+
+        rows = data["values"]
+        df = pd.DataFrame(rows)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df = df.set_index("datetime").sort_index()
+        for col in ["open", "high", "low", "close"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        if "volume" not in df.columns:
+            df["volume"] = 0
+        else:
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
+        df = df.dropna(subset=["open", "high", "low", "close"])
+
+        if len(df) < 30:
+            logger.error("Not enough BTC candles from TwelveData")
+            return None
+
+        close = df["close"]
+
+        # RSI using Wilder's smoothing (same as Gold)
+        delta = close.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/14, min_periods=14, adjust=False).mean()
+        avg_loss_safe = avg_loss.replace(0, 1e-10)
+        rs = avg_gain / avg_loss_safe
+        df["rsi"] = 100 - (100 / (1 + rs))
+        df["rsi"] = df["rsi"].fillna(50)
+
+        latest = df.iloc[-1]
+
+        def safe(val):
+            return float(val) if val is not None and not pd.isna(val) else None
+
+        try:
+            last_ts = df.index[-1]
+            last_candle_time = last_ts.strftime("%b %d, %Y %-I:%M %p ICT")
+        except Exception:
+            last_candle_time = str(df.index[-1])
+
+        result = {
+            "price": safe(latest["close"]),
+            "rsi": safe(latest["rsi"]),
+            "last_candle_time": last_candle_time,
+        }
+
+        with _btc_cache_lock:
+            _cached_btc = result
+            _btc_cache_timestamp = time.time()
+        return result
+    except Exception as e:
+        logger.error(f"BTC market data error: {e}")
         return None
 
 
@@ -1082,23 +1169,34 @@ def check_alerts_thread():
 
     # Skip API call if ALL alerts are in cooldown
     now = datetime.utcnow()
+    active = [a for a in active_alerts.values() if a["active"]]
+    if not active:
+        return
     all_in_cooldown = all(
-        alert.get("cooldown_until") and now < alert["cooldown_until"]
-        for alert in active_alerts.values()
-        if alert["active"]
+        a.get("cooldown_until") and now < a["cooldown_until"] for a in active
     )
     if all_in_cooldown:
         return  # No API call needed — all alerts cooling down
 
-    try:
-        ind = get_latest_indicators()
-        if not ind:
-            return
+    # Fetch Gold indicators only if at least one Gold alert needs checking
+    needs_gold = any(a["type"] in ("rsi_above", "rsi_below", "macd_bull", "macd_bear") for a in active)
+    # Fetch BTC indicators only if at least one BTC alert needs checking
+    needs_btc = any(a["type"] in ("btc_rsi_above", "btc_rsi_below") for a in active)
 
-        rsi = ind["rsi"]
-        vol_ratio = ind["vol_ratio"]
-        price = ind["price"]
+    ind = None
+    btc_ind = None
+    try:
+        if needs_gold:
+            ind = get_latest_indicators()
+            if not ind and not needs_btc:
+                return
+        if needs_btc:
+            btc_ind = get_btc_indicators()
+            if not btc_ind and not ind:
+                return
+
         now = datetime.utcnow()
+        ict_time = datetime.now(pytz.timezone("Asia/Bangkok")).strftime("%-I:%M %p")
 
         for alert_id, alert in list(active_alerts.items()):
             if not alert["active"]:
@@ -1123,66 +1221,106 @@ def check_alerts_thread():
             current_value = None
             message = ""
 
-            # ── RSI Above ──
-            if alert["type"] == "rsi_above" and rsi and rsi >= alert["value"]:
-                current_value = round(rsi, 1)
-                triggered = True
-                message = (
-                    f"🚨 <b>RSI ALERT!</b>\n\n"
-                    f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
-                    f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
-                    f"💰 Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
-                    f"⚠️ Possible reversal — consider SELL\n"
-                    f"👉 Tap 📊 Signal for full analysis"
-                )
+            if alert["type"] in ("rsi_above", "rsi_below", "macd_bull", "macd_bear"):
+                if not ind:
+                    continue
+                rsi = ind["rsi"]
+                price = ind["price"]
 
-            # ── RSI Below ──
-            elif alert["type"] == "rsi_below" and rsi and rsi <= alert["value"]:
-                current_value = round(rsi, 1)
-                triggered = True
-                message = (
-                    f"🚨 <b>RSI ALERT!</b>\n\n"
-                    f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
-                    f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
-                    f"💰 Price: <b>${price:,.2f}</b>\n"
-                    f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
-                    f"⚡ Possible bounce — consider BUY\n"
-                    f"👉 Tap 📊 Signal for full analysis"
-                )
-
-            # ── MACD Bullish Crossover ──
-            elif alert["type"] == "macd_bull":
-                macd_hist = ind.get("macd_hist")
-                prev_macd_hist = ind.get("prev_macd_hist")
-                if macd_hist and prev_macd_hist and prev_macd_hist < 0 and macd_hist > 0:
-                    current_value = round(macd_hist, 4)
+                # ── RSI Above ──
+                if alert["type"] == "rsi_above" and rsi and rsi >= alert["value"]:
+                    current_value = round(rsi, 1)
                     triggered = True
                     message = (
-                        f"🚨 <b>MACD ALERT!</b>\n\n"
-                        f"📈 MACD Bullish Crossover detected!\n"
-                        f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
+                        f"🚨 <b>RSI ALERT!</b>\n\n"
+                        f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
+                        f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
                         f"💰 Price: <b>${price:,.2f}</b>\n"
-                        f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
-                        f"⚡ Momentum turning BULLISH — consider BUY!\n"
+                        f"🕐 {ict_time} ICT\n\n"
+                        f"⚠️ Possible reversal — consider SELL\n"
                         f"👉 Tap 📊 Signal for full analysis"
                     )
 
-            # ── MACD Bearish Crossover ──
-            elif alert["type"] == "macd_bear":
-                macd_hist = ind.get("macd_hist")
-                prev_macd_hist = ind.get("prev_macd_hist")
-                if macd_hist and prev_macd_hist and prev_macd_hist > 0 and macd_hist < 0:
-                    current_value = round(macd_hist, 4)
+                # ── RSI Below ──
+                elif alert["type"] == "rsi_below" and rsi and rsi <= alert["value"]:
+                    current_value = round(rsi, 1)
                     triggered = True
                     message = (
-                        f"🚨 <b>MACD ALERT!</b>\n\n"
-                        f"📉 MACD Bearish Crossover detected!\n"
-                        f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
+                        f"🚨 <b>RSI ALERT!</b>\n\n"
+                        f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
+                        f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
                         f"💰 Price: <b>${price:,.2f}</b>\n"
-                        f"🕐 {datetime.now(pytz.timezone('Asia/Bangkok')).strftime('%-I:%M %p')} ICT\n\n"
-                        f"⚠️ Momentum turning BEARISH — consider SELL!\n"
+                        f"🕐 {ict_time} ICT\n\n"
+                        f"⚡ Possible bounce — consider BUY\n"
                         f"👉 Tap 📊 Signal for full analysis"
+                    )
+
+                # ── MACD Bullish Crossover ──
+                elif alert["type"] == "macd_bull":
+                    macd_hist = ind.get("macd_hist")
+                    prev_macd_hist = ind.get("prev_macd_hist")
+                    if macd_hist and prev_macd_hist and prev_macd_hist < 0 and macd_hist > 0:
+                        current_value = round(macd_hist, 4)
+                        triggered = True
+                        message = (
+                            f"🚨 <b>MACD ALERT!</b>\n\n"
+                            f"📈 MACD Bullish Crossover detected!\n"
+                            f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
+                            f"💰 Price: <b>${price:,.2f}</b>\n"
+                            f"🕐 {ict_time} ICT\n\n"
+                            f"⚡ Momentum turning BULLISH — consider BUY!\n"
+                            f"👉 Tap 📊 Signal for full analysis"
+                        )
+
+                # ── MACD Bearish Crossover ──
+                elif alert["type"] == "macd_bear":
+                    macd_hist = ind.get("macd_hist")
+                    prev_macd_hist = ind.get("prev_macd_hist")
+                    if macd_hist and prev_macd_hist and prev_macd_hist > 0 and macd_hist < 0:
+                        current_value = round(macd_hist, 4)
+                        triggered = True
+                        message = (
+                            f"🚨 <b>MACD ALERT!</b>\n\n"
+                            f"📉 MACD Bearish Crossover detected!\n"
+                            f"📊 MACD Hist: <b>{macd_hist:.4f}</b>\n"
+                            f"💰 Price: <b>${price:,.2f}</b>\n"
+                            f"🕐 {ict_time} ICT\n\n"
+                            f"⚠️ Momentum turning BEARISH — consider SELL!\n"
+                            f"👉 Tap 📊 Signal for full analysis"
+                        )
+
+            # ── BTC RSI Above ──
+            elif alert["type"] == "btc_rsi_above":
+                if not btc_ind:
+                    continue
+                btc_rsi = btc_ind["rsi"]
+                btc_price = btc_ind["price"]
+                if btc_rsi and btc_rsi >= alert["value"]:
+                    current_value = round(btc_rsi, 1)
+                    triggered = True
+                    message = (
+                        f"🚨 <b>BTC ALERT!</b>\n\n"
+                        f"📊 RSI is <b>ABOVE {alert['value']}</b>\n"
+                        f"📈 Current RSI: <b>{btc_rsi:.1f}</b>\n"
+                        f"💰 Price: <b>${btc_price:,.2f}</b>\n"
+                        f"🕐 {ict_time} ICT"
+                    )
+
+            # ── BTC RSI Below ──
+            elif alert["type"] == "btc_rsi_below":
+                if not btc_ind:
+                    continue
+                btc_rsi = btc_ind["rsi"]
+                btc_price = btc_ind["price"]
+                if btc_rsi and btc_rsi <= alert["value"]:
+                    current_value = round(btc_rsi, 1)
+                    triggered = True
+                    message = (
+                        f"🚨 <b>BTC ALERT!</b>\n\n"
+                        f"📊 RSI is <b>BELOW {alert['value']}</b>\n"
+                        f"📈 Current RSI: <b>{btc_rsi:.1f}</b>\n"
+                        f"💰 Price: <b>${btc_price:,.2f}</b>\n"
+                        f"🕐 {ict_time} ICT"
                     )
 
             if not triggered:
@@ -1236,10 +1374,12 @@ def add_alert(chat_id, alert_type, value):
 
 def format_alert_label(alert_type, value):
     labels = {
-        "rsi_above":   f"🔥 RSI Above {value}",
-        "rsi_below":   f"😴 RSI Below {value}",
-        "macd_bull":   f"📈 MACD Bullish Crossover",
-        "macd_bear":   f"📉 MACD Bearish Crossover",
+        "rsi_above":      f"🥇 RSI Above {value}",
+        "rsi_below":      f"🥇 RSI Below {value}",
+        "macd_bull":      f"📈 MACD Bullish Crossover",
+        "macd_bear":      f"📉 MACD Bearish Crossover",
+        "btc_rsi_above":  f"🪙 BTC RSI Above {value}",
+        "btc_rsi_below":  f"🪙 BTC RSI Below {value}",
     }
     return labels.get(alert_type, alert_type)
 
@@ -1271,12 +1411,16 @@ def main_menu_keyboard():
 def alert_menu_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🔥 RSI Above", callback_data="alert_rsi_above"),
-            InlineKeyboardButton("😴 RSI Below", callback_data="alert_rsi_below"),
+            InlineKeyboardButton("🥇 RSI Above", callback_data="alert_rsi_above"),
+            InlineKeyboardButton("🥇 RSI Below", callback_data="alert_rsi_below"),
         ],
         [
             InlineKeyboardButton("📈 MACD Bullish Cross", callback_data="alert_macd_bull"),
             InlineKeyboardButton("📉 MACD Bearish Cross", callback_data="alert_macd_bear"),
+        ],
+        [
+            InlineKeyboardButton("🪙 BTC RSI Above", callback_data="alert_btc_rsi_above"),
+            InlineKeyboardButton("🪙 BTC RSI Below", callback_data="alert_btc_rsi_below"),
         ],
         [
             InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu"),
@@ -1355,6 +1499,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("❌ Invalid. Enter a number between 1-99 (e.g. 30)")
 
+    elif state["step"] == "waiting_btc_rsi_above":
+        try:
+            value = float(text)
+            if not (0 < value < 100):
+                raise ValueError
+            add_alert(chat_id, "btc_rsi_above", value)
+            del user_state[user_id]
+            await update.message.reply_text(
+                f"✅ <b>BTC Alert Set!</b>\n\n🪙 Will notify when BTC RSI goes <b>ABOVE {value}</b> (M15)\n"
+                f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
+                f"🔄 Only alerts if RSI value changes",
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Invalid. Enter a number between 1-99 (e.g. 70)")
+
+    elif state["step"] == "waiting_btc_rsi_below":
+        try:
+            value = float(text)
+            if not (0 < value < 100):
+                raise ValueError
+            add_alert(chat_id, "btc_rsi_below", value)
+            del user_state[user_id]
+            await update.message.reply_text(
+                f"✅ <b>BTC Alert Set!</b>\n\n🪙 Will notify when BTC RSI drops <b>BELOW {value}</b> (M15)\n"
+                f"⏱ Cooldown: {COOLDOWN_MINUTES} min\n"
+                f"🔄 Only alerts if RSI value changes",
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Invalid. Enter a number between 1-99 (e.g. 30)")
+
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1403,6 +1581,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🚨 <b>Set Alert</b>\n\n"
             "Alerts fire every <b>5 minutes</b> if value changes.\n\n"
+            "🥇 <b>Gold (XAU/USD M5)</b> — RSI / MACD\n"
+            "🪙 <b>Bitcoin (BTC/USD M15)</b> — RSI\n\n"
             "Choose alert type:",
             parse_mode="HTML",
             reply_markup=alert_menu_keyboard(),
@@ -1421,6 +1601,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state[user_id] = {"step": "waiting_rsi_below"}
         await query.edit_message_text(
             "😴 <b>RSI Below Alert</b>\n\n"
+            "Type the RSI level (oversold = 30):\n"
+            "Example: <code>30</code>",
+            parse_mode="HTML",
+        )
+
+    elif data == "alert_btc_rsi_above":
+        user_state[user_id] = {"step": "waiting_btc_rsi_above"}
+        await query.edit_message_text(
+            "🪙 <b>BTC RSI Above Alert (M15)</b>\n\n"
+            "Type the RSI level (overbought = 70):\n"
+            "Example: <code>70</code>",
+            parse_mode="HTML",
+        )
+
+    elif data == "alert_btc_rsi_below":
+        user_state[user_id] = {"step": "waiting_btc_rsi_below"}
+        await query.edit_message_text(
+            "🪙 <b>BTC RSI Below Alert (M15)</b>\n\n"
             "Type the RSI level (oversold = 30):\n"
             "Example: <code>30</code>",
             parse_mode="HTML",
