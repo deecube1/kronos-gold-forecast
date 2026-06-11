@@ -228,8 +228,8 @@ def get_latest_indicators():
 
         df = df.dropna()
 
-        if len(df) < 30:
-            logger.error("Not enough candles from TwelveData")
+        if len(df) < 31:
+            logger.error("Not enough candles from TwelveData (need 31+ for closed-candle RSI)")
             return None
 
         close  = df["close"]
@@ -268,22 +268,22 @@ def get_latest_indicators():
             df["vol_avg"]   = 0
             df["vol_ratio"] = 0
 
-        latest = df.iloc[-1]
-        prev   = df.iloc[-2]
+        # Use last FULLY CLOSED candle (df.iloc[-1] is still forming).
+        # Exness chart shows RSI based on the closed candle, so we match that.
+        latest = df.iloc[-2]
+        prev   = df.iloc[-3]
 
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
-        # TwelveData returns timestamps in account timezone (Asia/Saigon = ICT)
-        # No conversion needed — just display directly
+        # Use closed candle timestamp (matches Exness chart)
         try:
-            last_ts = df.index[-1]
-            # Already in ICT — just format it
+            last_ts = df.index[-2]
             last_candle_time = last_ts.strftime("%b %d, %Y %-I:%M %p ICT")
-            logger.info(f"Last candle ICT: {last_candle_time}")
+            logger.info(f"Last closed candle ICT: {last_candle_time}")
         except Exception as e:
             logger.error(f"Timestamp error: {e}")
-            last_candle_time = str(df.index[-1])
+            last_candle_time = str(df.index[-2])
 
         result = {
             "price":            safe(latest["close"]),
@@ -352,8 +352,8 @@ def get_btc_indicators():
             df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0)
         df = df.dropna(subset=["open", "high", "low", "close"])
 
-        if len(df) < 30:
-            logger.error("Not enough BTC candles from TwelveData")
+        if len(df) < 31:
+            logger.error("Not enough BTC candles from TwelveData (need 31+ for closed-candle RSI)")
             return None
 
         close = df["close"]
@@ -369,16 +369,18 @@ def get_btc_indicators():
         df["rsi"] = 100 - (100 / (1 + rs))
         df["rsi"] = df["rsi"].fillna(50)
 
-        latest = df.iloc[-1]
+        # Use last FULLY CLOSED candle (matches Exness chart)
+        latest = df.iloc[-2]
+        prev   = df.iloc[-3]
 
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
         try:
-            last_ts = df.index[-1]
+            last_ts = df.index[-2]
             last_candle_time = last_ts.strftime("%b %d, %Y %-I:%M %p ICT")
         except Exception:
-            last_candle_time = str(df.index[-1])
+            last_candle_time = str(df.index[-2])
 
         result = {
             "price": safe(latest["close"]),
@@ -1227,33 +1229,43 @@ def check_alerts_thread():
                 rsi = ind["rsi"]
                 price = ind["price"]
 
-                # ── RSI Above ──
-                if alert["type"] == "rsi_above" and rsi and rsi >= alert["value"]:
-                    current_value = round(rsi, 1)
-                    triggered = True
-                    message = (
-                        f"🚨 <b>GOLD RSI ALERT!</b> 🥇\n\n"
-                        f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
-                        f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
-                        f"💰 XAU/USD: <b>${price:,.2f}</b>\n"
-                        f"🕐 {ict_time} ICT\n\n"
-                        f"⚠️ Possible reversal — consider SELL\n"
-                        f"👉 Tap 📊 Signal for full analysis"
-                    )
+                # ── RSI Above (edge-triggered: fires on rising-edge cross) ──
+                if alert["type"] == "rsi_above" and rsi:
+                    is_above = rsi >= alert["value"]
+                    prev_above = alert.get("prev_above", False)
+                    if is_above and not prev_above:
+                        # Just crossed above threshold (first time or after re-arm)
+                        current_value = round(rsi, 1)
+                        triggered = True
+                        message = (
+                            f"🚨 <b>GOLD RSI ALERT!</b> 🥇\n\n"
+                            f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
+                            f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
+                            f"💰 XAU/USD: <b>${price:,.2f}</b>\n"
+                            f"🕐 {ict_time} ICT\n\n"
+                            f"⚠️ Possible reversal — consider SELL\n"
+                            f"👉 Tap 📊 Signal for full analysis"
+                        )
+                    alert["prev_above"] = is_above
 
-                # ── RSI Below ──
-                elif alert["type"] == "rsi_below" and rsi and rsi <= alert["value"]:
-                    current_value = round(rsi, 1)
-                    triggered = True
-                    message = (
-                        f"🚨 <b>GOLD RSI ALERT!</b> 🥇\n\n"
-                        f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
-                        f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
-                        f"💰 XAU/USD: <b>${price:,.2f}</b>\n"
-                        f"🕐 {ict_time} ICT\n\n"
-                        f"⚡ Possible bounce — consider BUY\n"
-                        f"👉 Tap 📊 Signal for full analysis"
-                    )
+                # ── RSI Below (edge-triggered: fires on falling-edge cross) ──
+                elif alert["type"] == "rsi_below" and rsi:
+                    is_below = rsi <= alert["value"]
+                    prev_below = alert.get("prev_below", False)
+                    if is_below and not prev_below:
+                        # Just crossed below threshold (first time or after re-arm)
+                        current_value = round(rsi, 1)
+                        triggered = True
+                        message = (
+                            f"🚨 <b>GOLD RSI ALERT!</b> 🥇\n\n"
+                            f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
+                            f"📊 Current RSI: <b>{rsi:.1f}</b>\n"
+                            f"💰 XAU/USD: <b>${price:,.2f}</b>\n"
+                            f"🕐 {ict_time} ICT\n\n"
+                            f"⚡ Possible bounce — consider BUY\n"
+                            f"👉 Tap 📊 Signal for full analysis"
+                        )
+                    alert["prev_below"] = is_below
 
                 # ── MACD Bullish Crossover ──
                 elif alert["type"] == "macd_bull":
@@ -1289,55 +1301,56 @@ def check_alerts_thread():
                             f"👉 Tap 📊 Signal for full analysis"
                         )
 
-            # ── BTC RSI Above ──
+            # ── BTC RSI Above (edge-triggered) ──
             elif alert["type"] == "btc_rsi_above":
                 if not btc_ind:
                     continue
                 btc_rsi = btc_ind["rsi"]
                 btc_price = btc_ind["price"]
-                if btc_rsi and btc_rsi >= alert["value"]:
-                    current_value = round(btc_rsi, 1)
-                    triggered = True
-                    message = (
-                        f"🚨 <b>BTC RSI ALERT!</b> 🪙\n\n"
-                        f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
-                        f"📊 Current RSI: <b>{btc_rsi:.1f}</b>\n"
-                        f"💰 BTC/USD: <b>${btc_price:,.2f}</b>\n"
-                        f"🕐 {ict_time} ICT\n\n"
-                        f"⚠️ Possible reversal — consider SELL\n"
-                        f"👉 Tap 📊 Signal for full analysis"
-                    )
+                if btc_rsi:
+                    is_above = btc_rsi >= alert["value"]
+                    prev_above = alert.get("prev_above", False)
+                    if is_above and not prev_above:
+                        current_value = round(btc_rsi, 1)
+                        triggered = True
+                        message = (
+                            f"🚨 <b>BTC RSI ALERT!</b> 🪙\n\n"
+                            f"🔥 RSI is <b>ABOVE {alert['value']}</b> (Overbought!)\n"
+                            f"📊 Current RSI: <b>{btc_rsi:.1f}</b>\n"
+                            f"💰 BTC/USD: <b>${btc_price:,.2f}</b>\n"
+                            f"🕐 {ict_time} ICT\n\n"
+                            f"⚠️ Possible reversal — consider SELL\n"
+                            f"👉 Tap 📊 Signal for full analysis"
+                        )
+                    alert["prev_above"] = is_above
 
-            # ── BTC RSI Below ──
+            # ── BTC RSI Below (edge-triggered) ──
             elif alert["type"] == "btc_rsi_below":
                 if not btc_ind:
                     continue
                 btc_rsi = btc_ind["rsi"]
                 btc_price = btc_ind["price"]
-                if btc_rsi and btc_rsi <= alert["value"]:
-                    current_value = round(btc_rsi, 1)
-                    triggered = True
-                    message = (
-                        f"🚨 <b>BTC RSI ALERT!</b> 🪙\n\n"
-                        f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
-                        f"📊 Current RSI: <b>{btc_rsi:.1f}</b>\n"
-                        f"💰 BTC/USD: <b>${btc_price:,.2f}</b>\n"
-                        f"🕐 {ict_time} ICT\n\n"
-                        f"⚡ Possible bounce — consider BUY\n"
-                        f"👉 Tap 📊 Signal for full analysis"
-                    )
+                if btc_rsi:
+                    is_below = btc_rsi <= alert["value"]
+                    prev_below = alert.get("prev_below", False)
+                    if is_below and not prev_below:
+                        current_value = round(btc_rsi, 1)
+                        triggered = True
+                        message = (
+                            f"🚨 <b>BTC RSI ALERT!</b> 🪙\n\n"
+                            f"😴 RSI is <b>BELOW {alert['value']}</b> (Oversold!)\n"
+                            f"📊 Current RSI: <b>{btc_rsi:.1f}</b>\n"
+                            f"💰 BTC/USD: <b>${btc_price:,.2f}</b>\n"
+                            f"🕐 {ict_time} ICT\n\n"
+                            f"⚡ Possible bounce — consider BUY\n"
+                            f"👉 Tap 📊 Signal for full analysis"
+                        )
+                    alert["prev_below"] = is_below
 
             if not triggered:
                 continue
 
             alert_count = alert.get("alert_count", 0)
-
-            # ── Value change check — only for Alert 1 (not Alert 2) ──
-            last_val = alert.get("last_triggered_value")
-            if alert_count == 0:
-                # Alert 1 — only fire if value changed from last cycle
-                if last_val is not None and current_value == last_val:
-                    continue
 
             # ── Fire alert ──
             alert_count += 1
@@ -1372,6 +1385,11 @@ def add_alert(chat_id, alert_type, value):
         "cooldown_until": None,    # when long cooldown ends
         "active": True,
         "chat_id": chat_id,
+        # Edge-detection state. None = "not yet observed"; True/False = last seen state.
+        # Initialized to None so the first check can compare current vs None and
+        # decide whether to alert immediately (if RSI is already past threshold).
+        "prev_above": None,
+        "prev_below": None,
     }
     return aid
 
