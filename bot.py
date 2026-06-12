@@ -115,6 +115,7 @@ user_state = {}
 COOLDOWN_MINUTES = 1     # check every 1 minute
 MAX_ALERTS_BEFORE_COOLDOWN = 2   # send 2 alerts then 30min cooldown
 LONG_COOLDOWN_MINUTES = 30       # 30min cooldown after 2 alerts
+AUTO_CLEAR_AFTER_CYCLE = True    # when 2 alerts fire, auto-delete the alert (saves API calls)
 
 
 # ─────────────────────────────────────────────
@@ -1360,8 +1361,14 @@ def check_alerts_thread():
 
             count_msg = f"🔔 Alert {alert_count}/{MAX_ALERTS_BEFORE_COOLDOWN}"
             if alert_count >= MAX_ALERTS_BEFORE_COOLDOWN:
-                count_msg += f" — 30min cooldown starting"
-                alert["cooldown_until"] = now + timedelta(minutes=LONG_COOLDOWN_MINUTES)
+                if AUTO_CLEAR_AFTER_CYCLE:
+                    # Mark for deletion — alert is one-shot. Saves API calls.
+                    alert["active"] = False
+                    alert["pending_clear"] = True
+                    count_msg += f" — alert auto-cleared ✅ (set up again anytime)"
+                else:
+                    count_msg += f" — 30min cooldown starting"
+                    alert["cooldown_until"] = now + timedelta(minutes=LONG_COOLDOWN_MINUTES)
 
             send_message_sync(TELEGRAM_GROUP_ID, message + f"\n\n{count_msg}")
 
