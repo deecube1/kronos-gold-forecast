@@ -1230,12 +1230,17 @@ def check_alerts_thread():
                 rsi = ind["rsi"]
                 price = ind["price"]
 
-                # ── RSI Above (edge-triggered: fires on rising-edge cross) ──
+                # ── RSI Above (Option A: 1/2 on cross, 2/2 fires 1min later unconditionally) ──
                 if alert["type"] == "rsi_above" and rsi:
                     is_above = rsi >= alert["value"]
                     prev_above = alert.get("prev_above", False)
-                    if is_above and not prev_above:
-                        # Just crossed above threshold (first time or after re-arm)
+                    # First fire: only on rising-edge cross
+                    # Second fire (after 1/2 has already fired): fire unconditionally
+                    should_fire = is_above and (
+                        (not prev_above) or  # first cross
+                        (alert.get("alert_count", 0) >= 1)  # 1/2 already fired, fire 2/2
+                    )
+                    if should_fire:
                         current_value = round(rsi, 1)
                         triggered = True
                         message = (
@@ -1249,12 +1254,15 @@ def check_alerts_thread():
                         )
                     alert["prev_above"] = is_above
 
-                # ── RSI Below (edge-triggered: fires on falling-edge cross) ──
+                # ── RSI Below (Option A: 1/2 on cross, 2/2 fires 1min later unconditionally) ──
                 elif alert["type"] == "rsi_below" and rsi:
                     is_below = rsi <= alert["value"]
                     prev_below = alert.get("prev_below", False)
-                    if is_below and not prev_below:
-                        # Just crossed below threshold (first time or after re-arm)
+                    should_fire = is_below and (
+                        (not prev_below) or  # first cross
+                        (alert.get("alert_count", 0) >= 1)  # 1/2 already fired
+                    )
+                    if should_fire:
                         current_value = round(rsi, 1)
                         triggered = True
                         message = (
@@ -1302,7 +1310,7 @@ def check_alerts_thread():
                             f"👉 Tap 📊 Signal for full analysis"
                         )
 
-            # ── BTC RSI Above (edge-triggered) ──
+            # ── BTC RSI Above (Option A: 1/2 on cross, 2/2 fires 1min later unconditionally) ──
             elif alert["type"] == "btc_rsi_above":
                 if not btc_ind:
                     continue
@@ -1311,7 +1319,11 @@ def check_alerts_thread():
                 if btc_rsi:
                     is_above = btc_rsi >= alert["value"]
                     prev_above = alert.get("prev_above", False)
-                    if is_above and not prev_above:
+                    should_fire = is_above and (
+                        (not prev_above) or  # first cross
+                        (alert.get("alert_count", 0) >= 1)  # 1/2 already fired
+                    )
+                    if should_fire:
                         current_value = round(btc_rsi, 1)
                         triggered = True
                         message = (
@@ -1325,7 +1337,7 @@ def check_alerts_thread():
                         )
                     alert["prev_above"] = is_above
 
-            # ── BTC RSI Below (edge-triggered) ──
+            # ── BTC RSI Below (Option A: 1/2 on cross, 2/2 fires 1min later unconditionally) ──
             elif alert["type"] == "btc_rsi_below":
                 if not btc_ind:
                     continue
@@ -1334,7 +1346,11 @@ def check_alerts_thread():
                 if btc_rsi:
                     is_below = btc_rsi <= alert["value"]
                     prev_below = alert.get("prev_below", False)
-                    if is_below and not prev_below:
+                    should_fire = is_below and (
+                        (not prev_below) or  # first cross
+                        (alert.get("alert_count", 0) >= 1)  # 1/2 already fired
+                    )
+                    if should_fire:
                         current_value = round(btc_rsi, 1)
                         triggered = True
                         message = (
@@ -1364,7 +1380,6 @@ def check_alerts_thread():
                 if AUTO_CLEAR_AFTER_CYCLE:
                     # Mark for deletion — alert is one-shot. Saves API calls.
                     alert["active"] = False
-                    alert["pending_clear"] = True
                     count_msg += f" — alert auto-cleared ✅ (set up again anytime)"
                 else:
                     count_msg += f" — 30min cooldown starting"
