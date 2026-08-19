@@ -161,77 +161,78 @@ def send_message_sync(chat_id, text):
     future.result(timeout=30)
 
 
-def send_photo_sync(chat_id, image_bytes, caption=""):
-    future = asyncio.run_coroutine_threadsafe(
-        _app.bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption),
-        _main_loop
-    )
-    future.result(timeout=30)
-
-
-# ─────────────────────────────────────────────
-# MARKET DATA & INDICATORS
-# ─────────────────────────────────────────────
-
 def get_latest_indicators():
-    """Fetch XAU/USD M5 candles from TwelveData (real-time, no delay)."""
+    """Fetch XAU/USD M5 candles — MT5 bridge first, TwelveData fallback."""
     global _cached_indicators, _cache_timestamp
     try:
-        # Return cached data if fresh (within 60 seconds)
         with _cache_lock:
             if _cached_indicators and (time.time() - _cache_timestamp) < _cache_ttl:
                 return _cached_indicators
-        import pytz
 
-        # TwelveData — real-time XAU/USD M5
-        resp = requests.get(
-            f"{TWELVEDATA_URL}/time_series",
-            params={
-                "symbol": "XAU/USD",
-                "interval": "5min",
-                "outputsize": 100,
-                "apikey": TWELVEDATA_API_KEY,
-                "format": "JSON",
-                "timezone": "Asia/Bangkok",
-            }
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        df = None
+        source = None
 
-        if "values" not in data:
-            logger.error(f"TwelveData error: {data}")
+        # --- Try MT5 Bridge first ---
+        try:
+            bridge_url = os.environ.get("MT5_BRIDGE_URL", "")
+            if bridge_url:
+                resp = requests.get(f"{bridge_url}/candles", timeout=5)
+                resp.raise_for_status()
+                rows = resp.json()
+                df_temp = pd.DataFrame(rows)
+                df_temp["datetime"] = pd.to_datetime(df_temp["time"])
+                df_temp = df_temp.set_index("datetime").sort_index()
+                df_temp = df_temp.rename(columns={"tick_volume": "volume"})
+                for col in ["open", "high", "low", "close", "volume"]:
+                    if col in df_temp.columns:
+                        df_temp[col] = pd.to_numeric(df_temp[col], errors="coerce")
+                df_temp = df_temp.dropna(subset=["open", "high", "low", "close"])
+                if len(df_temp) > 10:
+                    df = df_temp
+                    source = "mt5"
+                    logger.info(f"MT5 Bridge: {len(df)} candles")
+        except Exception as e:
+            logger.warning(f"MT5 bridge failed, falling back to TwelveData: {e}")
+
+        # --- Fallback to TwelveData ---
+        if df is None:
+            resp = requests.get(
+                f"{TWELVEDATA_URL}/time_series",
+                params={
+                    "symbol": "XAU/USD",
+                    "interval": "5min",
+                    "outputsize": 100,
+                    "apikey": TWELVEDATA_API_KEY,
+                    "format": "JSON",
+                    "timezone": "Asia/Bangkok",
+                },
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if "values" not in data:
+                logger.error(f"TwelveData error: {data}")
+                return None
+            rows = data["values"]
+            df_temp = pd.DataFrame(rows)
+            df_temp["datetime"] = pd.to_datetime(df_temp["datetime"])
+            df_temp = df_temp.set_index("datetime").sort_index()
+            for col in ["open", "high", "low", "close"]:
+                if col in df_temp.columns:
+                    df_temp[col] = pd.to_numeric(df_temp[col], errors="coerce")
+            if "volume" not in df_temp.columns:
+                df_temp["volume"] = 0
+            else:
+                df_temp["volume"] = pd.to_numeric(df_temp["volume"], errors="coerce").fillna(0)
+            df = df_temp.dropna(subset=["open", "high", "low", "close"])
+            source = "twelvedata"
+            logger.info(f"TwelveData fallback: {len(df)} candles")
+
+        if df is None or len(df) < 10:
+            logger.error("Not enough candles retrieved for indicator calculation")
             return None
-        rows = data["values"]
-        df_temp = pd.DataFrame(rows)
-        df_temp["datetime"] = pd.to_datetime(df_temp["datetime"])
-        df_temp = df_temp.set_index("datetime").sort_index()
-        for col in ["open", "high", "low", "close"]:
-            if col in df_temp.columns:
-                df_temp[col] = pd.to_numeric(df_temp[col], errors="coerce")
-        if "volume" not in df_temp.columns:
-            df_temp["volume"] = 0
-        else:
-            df_temp["volume"] = pd.to_numeric(df_temp["volume"], errors="coerce").fillna(0)
-        df = df_temp.dropna(subset=["open","high","low","close"])
-        logger.info(f"TwelveData: {len(df)} candles, latest: {df.index[-1]}")
 
-        rows = data["values"]
-        df = pd.DataFrame(rows)
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df = df.set_index("datetime").sort_index()
-        df = df.rename(columns={
-            "open": "open", "high": "high",
-            "low": "low", "close": "close", "volume": "volume"
-        })
-        for col in ["open", "high", "low", "close", "volume"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        df = df.dropna()
-
-        if len(df) < 31:
-            logger.error("Not enough candles from TwelveData (need 31+ for closed-candle RSI)")
-            return None
+        df.attrs["source"] = source
 
         close  = df["close"]
         high   = df["high"]
@@ -270,21 +271,18 @@ def get_latest_indicators():
             df["vol_ratio"] = 0
 
         # Use last FULLY CLOSED candle (df.iloc[-1] is still forming).
-        # Exness chart shows RSI based on the closed candle, so we match that.
-        latest = df.iloc[-2]
-        prev   = df.iloc[-3]
+        latest = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
+        prev   = df.iloc[-3] if len(df) >= 3 else df.iloc[-1]
 
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
-        # Use closed candle timestamp (matches Exness chart)
         try:
-            last_ts = df.index[-2]
+            last_ts = df.index[-2] if len(df) >= 2 else df.index[-1]
             last_candle_time = last_ts.strftime("%b %d, %Y %-I:%M %p ICT")
-            logger.info(f"Last closed candle ICT: {last_candle_time}")
         except Exception as e:
             logger.error(f"Timestamp error: {e}")
-            last_candle_time = str(df.index[-2])
+            last_candle_time = str(df.index[-1])
 
         result = {
             "price":            safe(latest["close"]),
@@ -302,15 +300,18 @@ def get_latest_indicators():
             "vol_avg":          safe(latest["vol_avg"]) if "vol_avg" in latest.index else 0,
             "vol_ratio":        safe(latest["vol_ratio"]) if "vol_ratio" in latest.index else 0,
             "last_candle_time": last_candle_time,
-            "_raw_df": df.copy(),
+            "source":           source,
+            "_raw_df":          df.copy(),
         }
-        # Cache for 60 seconds
+
         with _cache_lock:
             _cached_indicators = result
             _cache_timestamp = time.time()
+
         return result
+
     except Exception as e:
-        logger.error(f"Market data error: {e}")
+        logger.error(f"get_latest_indicators error: {e}")
         return None
 
 
