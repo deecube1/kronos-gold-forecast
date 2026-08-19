@@ -117,6 +117,37 @@ MAX_ALERTS_BEFORE_COOLDOWN = 2   # send 2 alerts then 30min cooldown
 LONG_COOLDOWN_MINUTES = 30       # 30min cooldown after 2 alerts
 AUTO_CLEAR_AFTER_CYCLE = True    # when 2 alerts fire, auto-delete the alert (saves API calls)
 
+# ─────────────────────────────────────────────
+# DYNAMIC SETTINGS (MT5 bridge vs TwelveData)
+# ─────────────────────────────────────────────
+
+_mt5_bridge_available = False
+_mt5_bridge_last_check = 0
+_mt5_bridge_check_interval = 30  # recheck every 30 seconds
+
+def is_mt5_bridge_up():
+    """Check if MT5 bridge is available. Cached for 30 seconds."""
+    global _mt5_bridge_available, _mt5_bridge_last_check
+    bridge_url = os.environ.get("MT5_BRIDGE_URL", "")
+    if not bridge_url:
+        return False
+    now = time.time()
+    if now - _mt5_bridge_last_check < _mt5_bridge_check_interval:
+        return _mt5_bridge_available
+    try:
+        resp = requests.get(f"{bridge_url}/health", timeout=3)
+        _mt5_bridge_available = resp.ok
+    except:
+        _mt5_bridge_available = False
+    _mt5_bridge_last_check = now
+    return _mt5_bridge_available
+
+def get_cache_ttl():
+    return 10 if is_mt5_bridge_up() else 60
+
+def get_alert_interval_seconds():
+    return 10 if is_mt5_bridge_up() else 60
+
 
 # ─────────────────────────────────────────────
 # RUNPOD HELPERS
@@ -161,13 +192,26 @@ def send_message_sync(chat_id, text):
     future.result(timeout=30)
 
 
+def send_photo_sync(chat_id, image_bytes, caption=""):
+    future = asyncio.run_coroutine_threadsafe(
+        _app.bot.send_photo(chat_id=chat_id, photo=image_bytes, caption=caption),
+        _main_loop
+    )
+    future.result(timeout=30)
+
+
+# ─────────────────────────────────────────────
+# MARKET DATA & INDICATORS
+# ─────────────────────────────────────────────
+
 def get_latest_indicators():
     """Fetch XAU/USD M5 candles — MT5 bridge first, TwelveData fallback."""
     global _cached_indicators, _cache_timestamp
     try:
         with _cache_lock:
-            if _cached_indicators and (time.time() - _cache_timestamp) < _cache_ttl:
+            if _cached_indicators and (time.time() - _cache_timestamp) < get_cache_ttl():
                 return _cached_indicators
+        import pytz
 
         df = None
         source = None
@@ -190,7 +234,7 @@ def get_latest_indicators():
                 if len(df_temp) > 10:
                     df = df_temp
                     source = "mt5"
-                    logger.info(f"MT5 Bridge: {len(df)} candles")
+                    logger.info(f"MT5 Bridge: {len(df)} candles, latest: {df.index[-1]}")
         except Exception as e:
             logger.warning(f"MT5 bridge failed, falling back to TwelveData: {e}")
 
@@ -210,6 +254,7 @@ def get_latest_indicators():
             )
             resp.raise_for_status()
             data = resp.json()
+
             if "values" not in data:
                 logger.error(f"TwelveData error: {data}")
                 return None
@@ -226,13 +271,17 @@ def get_latest_indicators():
                 df_temp["volume"] = pd.to_numeric(df_temp["volume"], errors="coerce").fillna(0)
             df = df_temp.dropna(subset=["open", "high", "low", "close"])
             source = "twelvedata"
-            logger.info(f"TwelveData fallback: {len(df)} candles")
+            logger.info(f"TwelveData fallback: {len(df)} candles, latest: {df.index[-1]}")
 
-        if df is None or len(df) < 10:
-            logger.error("Not enough candles retrieved for indicator calculation")
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.dropna()
+
+        if len(df) < 31:
+            logger.error("Not enough candles from TwelveData (need 31+ for closed-candle RSI)")
             return None
-
-        df.attrs["source"] = source
 
         close  = df["close"]
         high   = df["high"]
@@ -271,18 +320,21 @@ def get_latest_indicators():
             df["vol_ratio"] = 0
 
         # Use last FULLY CLOSED candle (df.iloc[-1] is still forming).
-        latest = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-        prev   = df.iloc[-3] if len(df) >= 3 else df.iloc[-1]
+        # Exness chart shows RSI based on the closed candle, so we match that.
+        latest = df.iloc[-2]
+        prev   = df.iloc[-3]
 
         def safe(val):
             return float(val) if val is not None and not pd.isna(val) else None
 
+        # Use closed candle timestamp (matches Exness chart)
         try:
-            last_ts = df.index[-2] if len(df) >= 2 else df.index[-1]
+            last_ts = df.index[-2]
             last_candle_time = last_ts.strftime("%b %d, %Y %-I:%M %p ICT")
+            logger.info(f"Last closed candle ICT: {last_candle_time}")
         except Exception as e:
             logger.error(f"Timestamp error: {e}")
-            last_candle_time = str(df.index[-1])
+            last_candle_time = str(df.index[-2])
 
         result = {
             "price":            safe(latest["close"]),
@@ -301,17 +353,14 @@ def get_latest_indicators():
             "vol_ratio":        safe(latest["vol_ratio"]) if "vol_ratio" in latest.index else 0,
             "last_candle_time": last_candle_time,
             "source":           source,
-            "_raw_df":          df.copy(),
+            "_raw_df": df.copy(),
         }
-
         with _cache_lock:
             _cached_indicators = result
             _cache_timestamp = time.time()
-
         return result
-
     except Exception as e:
-        logger.error(f"get_latest_indicators error: {e}")
+        logger.error(f"Market data error: {e}")
         return None
 
 
@@ -766,6 +815,7 @@ def generate_signal(ind, kronos_bias=None):
         "tp2": tp2,
         "atr": atr,
         "last_candle_time": ind.get("last_candle_time", "Unknown"),
+        "source": ind.get("source", "twelvedata"),
     }
 
 
@@ -775,11 +825,12 @@ def format_signal_message(sig):
     )
 
     last_candle = sig.get('last_candle_time', 'Unknown')
+    source_emoji = "📡 MT5" if sig.get("source") == "mt5" else "☁️ Cloud"
     lines = [
         "🥇 <b>XAU/USD Trading Signal (M5)</b>",
         "",
         f"💰 Price: <b>${sig['price']:,.2f}</b>",
-        f"🕐 Data: <b>{last_candle}</b>",
+        f"🕐 Data: <b>{last_candle}</b> | {source_emoji}",
         "",
         "<b>Indicator Analysis:</b>",
     ]
@@ -1166,8 +1217,19 @@ def run_signal_thread(chat_id, use_kronos=True):
 # ALERT MONITORING (every 1 minute)
 # ─────────────────────────────────────────────
 
+_last_alert_check = 0
+
 def check_alerts_thread():
+    global _last_alert_check
     import pytz
+
+    # Respect dynamic interval — skip if called too soon
+    now_ts = time.time()
+    interval = get_alert_interval_seconds()
+    if now_ts - _last_alert_check < interval:
+        return
+    _last_alert_check = now_ts
+
     if not active_alerts:
         return
 
@@ -1741,9 +1803,9 @@ def main():
 
     _app.post_init = post_init
 
-    # Alert scheduler — every 1 minute
+    # Alert scheduler — dynamic interval (10s with MT5 bridge, 60s with TwelveData)
     scheduler = BackgroundScheduler()
-    scheduler.add_job(check_alerts_thread, "interval", minutes=1)
+    scheduler.add_job(check_alerts_thread, "interval", seconds=10)
     scheduler.add_job(check_economic_calendar, "interval", minutes=5)
     scheduler.start()
 
