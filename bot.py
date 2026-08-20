@@ -1687,61 +1687,70 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t.start()
 
     elif data == "alert_menu":
-        await query.edit_message_text(
-            "🚨 <b>Set Alert</b>\n\n"
-            "Tap a button to activate instantly.\n\n"
-            "🥇 <b>Gold XAU/USD M5</b> — RSI 75/25\n"
-            "🪙 <b>Bitcoin BTC/USD M15</b> — RSI 75/25\n"
-            "📈 <b>MACD</b> — Bullish/Bearish Cross\n\n"
-            "Choose alert type:",
+        await query.answer()
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🚨 <b>Set Alert</b>\n\nTap a button to activate instantly.\n\n🥇 <b>Gold XAU/USD M5</b> — RSI 75/25\n🪙 <b>Bitcoin BTC/USD M15</b> — RSI 75/25\n📈 <b>MACD</b> — Bullish/Bearish Cross\n\nChoose alert type:",
             parse_mode="HTML",
             reply_markup=alert_menu_keyboard(),
         )
 
     elif data == "alert_rsi_above":
         add_alert(chat_id, "rsi_above", 75)
-        await query.edit_message_text(
-            "✅ <b>Gold RSI > 75 Alert Set!</b>\n\n🔥 Will notify when Gold RSI goes <b>ABOVE 75</b> (Overbought)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
+        await query.answer("✅ Alert set!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ <b>Gold RSI > 75 Alert Set!</b>\n\n🔥 Will notify when Gold RSI goes <b>ABOVE 75</b> (Overbought)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_rsi_below":
         add_alert(chat_id, "rsi_below", 25)
-        await query.edit_message_text(
-            "✅ <b>Gold RSI < 25 Alert Set!</b>\n\n😴 Will notify when Gold RSI drops <b>BELOW 25</b> (Oversold)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
+        await query.answer("✅ Alert set!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ <b>Gold RSI < 25 Alert Set!</b>\n\n😴 Will notify when Gold RSI drops <b>BELOW 25</b> (Oversold)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_btc_rsi_above":
         add_alert(chat_id, "btc_rsi_above", 75)
-        await query.edit_message_text(
-            "✅ <b>BTC RSI > 75 Alert Set!</b>\n\n🔥 Will notify when BTC RSI goes <b>ABOVE 75</b> (M15, Overbought)\n☁️ Source: TwelveData",
+        await query.answer("✅ Alert set!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ <b>BTC RSI > 75 Alert Set!</b>\n\n🔥 Will notify when BTC RSI goes <b>ABOVE 75</b> (M15, Overbought)\n☁️ Source: TwelveData",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_btc_rsi_below":
         add_alert(chat_id, "btc_rsi_below", 25)
-        await query.edit_message_text(
-            "✅ <b>BTC RSI < 25 Alert Set!</b>\n\n😴 Will notify when BTC RSI drops <b>BELOW 25</b> (M15, Oversold)\n☁️ Source: TwelveData",
+        await query.answer("✅ Alert set!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="✅ <b>BTC RSI < 25 Alert Set!</b>\n\n😴 Will notify when BTC RSI drops <b>BELOW 25</b> (M15, Oversold)\n☁️ Source: TwelveData",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_macd_bull":
         add_alert(chat_id, "macd_bull", 0)
-        await query.edit_message_text(
-            f"✅ <b>MACD Bullish Alert Set!</b>\n\n📈 Will notify when MACD crosses <b>ABOVE signal</b>\n⚡ Momentum turning bullish\n⏱ Cooldown: {COOLDOWN_MINUTES} min",
+        await query.answer("✅ Alert set!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ <b>MACD Bullish Alert Set!</b>\n\n📈 Will notify when MACD crosses <b>ABOVE signal</b>\n⚡ Momentum turning bullish",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_macd_bear":
         add_alert(chat_id, "macd_bear", 0)
-        await query.edit_message_text(
-            f"✅ <b>MACD Bearish Alert Set!</b>\n\n📉 Will notify when MACD crosses <b>BELOW signal</b>\n⚠️ Momentum turning bearish\n⏱ Cooldown: {COOLDOWN_MINUTES} min",
+        await query.answer("✅ Alert set!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"✅ <b>MACD Bearish Alert Set!</b>\n\n📉 Will notify when MACD crosses <b>BELOW signal</b>\n⚠️ Momentum turning bearish",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
@@ -1750,8 +1759,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             active_list = [(aid, a) for aid, a in active_alerts.items() if a["active"]]
             if not active_list:
-                await query.edit_message_text(
-                    "📋 <b>Active Alerts</b>\n\nNo alerts set.",
+                await query.answer()
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="📋 <b>Active Alerts</b>\n\nNo alerts set.",
                     parse_mode="HTML",
                     reply_markup=main_menu_keyboard(),
                 )
@@ -1759,19 +1770,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines = ["📋 <b>Active Alerts</b>\n"]
                 for aid, alert in active_list:
                     lines.append(f"✅ {format_alert_label(alert['type'], alert['value'])}")
-                await query.edit_message_text(
-                    "\n".join(lines),
+                await query.answer()
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="\n".join(lines),
                     parse_mode="HTML",
                     reply_markup=main_menu_keyboard(),
                 )
         except Exception as e:
             logger.error(f"list_alerts error: {e}")
-            await query.answer("⚠️ Could not load alerts. Try /menu again.", show_alert=True)
+            await query.answer("⚠️ Error loading alerts.", show_alert=True)
 
     elif data == "clear_alerts":
         active_alerts.clear()
-        await query.edit_message_text(
-            "🔕 <b>All alerts cleared!</b>",
+        await query.answer("🔕 All alerts cleared!")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="🔕 <b>All alerts cleared!</b>",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
