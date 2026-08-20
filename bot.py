@@ -1700,60 +1700,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "alert_rsi_above":
         add_alert(chat_id, "rsi_above", 75)
-        await query.answer("✅ Gold RSI > 75 alert set!", show_alert=False)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="✅ <b>Alert Set!</b>\n\n🔥 Will notify when Gold RSI goes <b>ABOVE 75</b> (Overbought)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
+        await query.edit_message_text(
+            "✅ <b>Gold RSI > 75 Alert Set!</b>\n\n🔥 Will notify when Gold RSI goes <b>ABOVE 75</b> (Overbought)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_rsi_below":
         add_alert(chat_id, "rsi_below", 25)
-        await query.answer("✅ Gold RSI < 25 alert set!", show_alert=False)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="✅ <b>Alert Set!</b>\n\n😴 Will notify when Gold RSI drops <b>BELOW 25</b> (Oversold)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
+        await query.edit_message_text(
+            "✅ <b>Gold RSI < 25 Alert Set!</b>\n\n😴 Will notify when Gold RSI drops <b>BELOW 25</b> (Oversold)\n📡 Source: MT5 bridge (auto-fallback to cloud)",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_btc_rsi_above":
         add_alert(chat_id, "btc_rsi_above", 75)
-        await query.answer("✅ BTC RSI > 75 alert set!", show_alert=False)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="✅ <b>BTC Alert Set!</b>\n\n🔥 Will notify when BTC RSI goes <b>ABOVE 75</b> (M15, Overbought)\n☁️ Source: TwelveData",
+        await query.edit_message_text(
+            "✅ <b>BTC RSI > 75 Alert Set!</b>\n\n🔥 Will notify when BTC RSI goes <b>ABOVE 75</b> (M15, Overbought)\n☁️ Source: TwelveData",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_btc_rsi_below":
         add_alert(chat_id, "btc_rsi_below", 25)
-        await query.answer("✅ BTC RSI < 25 alert set!", show_alert=False)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text="✅ <b>BTC Alert Set!</b>\n\n😴 Will notify when BTC RSI drops <b>BELOW 25</b> (M15, Oversold)\n☁️ Source: TwelveData",
+        await query.edit_message_text(
+            "✅ <b>BTC RSI < 25 Alert Set!</b>\n\n😴 Will notify when BTC RSI drops <b>BELOW 25</b> (M15, Oversold)\n☁️ Source: TwelveData",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_macd_bull":
         add_alert(chat_id, "macd_bull", 0)
-        await query.answer("✅ MACD Bullish alert set!", show_alert=False)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ <b>MACD Bullish Alert Set!</b>\n\n📈 Will notify when MACD crosses <b>ABOVE signal</b>\n⚡ Momentum turning bullish\n⏱ Cooldown: {COOLDOWN_MINUTES} min",
+        await query.edit_message_text(
+            f"✅ <b>MACD Bullish Alert Set!</b>\n\n📈 Will notify when MACD crosses <b>ABOVE signal</b>\n⚡ Momentum turning bullish\n⏱ Cooldown: {COOLDOWN_MINUTES} min",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_macd_bear":
         add_alert(chat_id, "macd_bear", 0)
-        await query.answer("✅ MACD Bearish alert set!", show_alert=False)
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"✅ <b>MACD Bearish Alert Set!</b>\n\n📉 Will notify when MACD crosses <b>BELOW signal</b>\n⚠️ Momentum turning bearish\n⏱ Cooldown: {COOLDOWN_MINUTES} min",
+        await query.edit_message_text(
+            f"✅ <b>MACD Bearish Alert Set!</b>\n\n📉 Will notify when MACD crosses <b>BELOW signal</b>\n⚠️ Momentum turning bearish\n⏱ Cooldown: {COOLDOWN_MINUTES} min",
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
