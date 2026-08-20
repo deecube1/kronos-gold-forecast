@@ -1761,7 +1761,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "list_alerts":
-        if not active_alerts:
+        active_list = [(aid, a) for aid, a in active_alerts.items() if a["active"]]
+        if not active_list:
             await query.edit_message_text(
                 "📋 <b>Active Alerts</b>\n\nNo alerts set.",
                 parse_mode="HTML",
@@ -1769,9 +1770,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             lines = ["📋 <b>Active Alerts</b>\n"]
-            for aid, alert in active_alerts.items():
-                if alert["active"]:
-                    lines.append(f"#{aid} {format_alert_label(alert['type'], alert['value'])}")
+            for aid, alert in active_list:
+                lines.append(f"✅ {format_alert_label(alert['type'], alert['value'])}")
             await query.edit_message_text(
                 "\n".join(lines),
                 parse_mode="HTML",
@@ -1796,8 +1796,6 @@ def main():
 
     # Load custom model
     load_custom_model()
-
-    _app = Application.builder().token(TELEGRAM_TOKEN).build()
 
     _app.add_handler(CommandHandler("start", start_command))
     _app.add_handler(CommandHandler("menu", menu_command))
