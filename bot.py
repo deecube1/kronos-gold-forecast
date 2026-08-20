@@ -1761,22 +1761,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif data == "list_alerts":
-        active_list = [(aid, a) for aid, a in active_alerts.items() if a["active"]]
-        if not active_list:
-            await query.edit_message_text(
-                "📋 <b>Active Alerts</b>\n\nNo alerts set.",
-                parse_mode="HTML",
-                reply_markup=main_menu_keyboard(),
-            )
-        else:
-            lines = ["📋 <b>Active Alerts</b>\n"]
-            for aid, alert in active_list:
-                lines.append(f"✅ {format_alert_label(alert['type'], alert['value'])}")
-            await query.edit_message_text(
-                "\n".join(lines),
-                parse_mode="HTML",
-                reply_markup=main_menu_keyboard(),
-            )
+        try:
+            active_list = [(aid, a) for aid, a in active_alerts.items() if a["active"]]
+            if not active_list:
+                await query.edit_message_text(
+                    "📋 <b>Active Alerts</b>\n\nNo alerts set.",
+                    parse_mode="HTML",
+                    reply_markup=main_menu_keyboard(),
+                )
+            else:
+                lines = ["📋 <b>Active Alerts</b>\n"]
+                for aid, alert in active_list:
+                    lines.append(f"✅ {format_alert_label(alert['type'], alert['value'])}")
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    parse_mode="HTML",
+                    reply_markup=main_menu_keyboard(),
+                )
+        except Exception as e:
+            logger.error(f"list_alerts error: {e}")
+            await query.answer("⚠️ Could not load alerts. Try /menu again.", show_alert=True)
 
     elif data == "clear_alerts":
         active_alerts.clear()
@@ -1798,6 +1802,7 @@ def main():
     load_custom_model()
 
     _app = Application.builder().token(TELEGRAM_TOKEN).build()
+
     _app.add_handler(CommandHandler("start", start_command))
     _app.add_handler(CommandHandler("menu", menu_command))
     _app.add_handler(CallbackQueryHandler(button_callback))
