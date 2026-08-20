@@ -1459,6 +1459,11 @@ def check_alerts_thread():
 # ─────────────────────────────────────────────
 
 def add_alert(chat_id, alert_type, value):
+    # Replace existing alert of same type (no duplicates)
+    for aid, alert in list(active_alerts.items()):
+        if alert["type"] == alert_type and alert["active"]:
+            active_alerts.pop(aid)
+            break
     alert_id_counter[0] += 1
     aid = alert_id_counter[0]
     active_alerts[aid] = {
@@ -1466,13 +1471,10 @@ def add_alert(chat_id, alert_type, value):
         "value": value,
         "last_triggered": None,
         "last_triggered_value": None,
-        "alert_count": 0,          # how many alerts sent in current cycle
-        "cooldown_until": None,    # when long cooldown ends
+        "alert_count": 0,
+        "cooldown_until": None,
         "active": True,
         "chat_id": chat_id,
-        # Edge-detection state. None = "not yet observed"; True/False = last seen state.
-        # Initialized to None so the first check can compare current vs None and
-        # decide whether to alert immediately (if RSI is already past threshold).
         "prev_above": None,
         "prev_below": None,
     }
@@ -1481,12 +1483,12 @@ def add_alert(chat_id, alert_type, value):
 
 def format_alert_label(alert_type, value):
     labels = {
-        "rsi_above":      f"🥇 RSI Above {value}",
-        "rsi_below":      f"🥇 RSI Below {value}",
+        "rsi_above":      f"🥇 Gold RSI > {value} (M5)",
+        "rsi_below":      f"🥇 Gold RSI < {value} (M5)",
         "macd_bull":      f"📈 MACD Bullish Crossover",
         "macd_bear":      f"📉 MACD Bearish Crossover",
-        "btc_rsi_above":  f"🪙 BTC RSI Above {value}",
-        "btc_rsi_below":  f"🪙 BTC RSI Below {value}",
+        "btc_rsi_above":  f"🪙 BTC RSI > {value} (M15)",
+        "btc_rsi_below":  f"🪙 BTC RSI < {value} (M15)",
     }
     return labels.get(alert_type, alert_type)
 
@@ -1518,16 +1520,16 @@ def main_menu_keyboard():
 def alert_menu_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🥇 RSI Above", callback_data="alert_rsi_above"),
-            InlineKeyboardButton("🥇 RSI Below", callback_data="alert_rsi_below"),
+            InlineKeyboardButton("🥇 Gold RSI > 75", callback_data="alert_rsi_above"),
+            InlineKeyboardButton("🥇 Gold RSI < 25", callback_data="alert_rsi_below"),
         ],
         [
             InlineKeyboardButton("📈 MACD Bullish Cross", callback_data="alert_macd_bull"),
             InlineKeyboardButton("📉 MACD Bearish Cross", callback_data="alert_macd_bear"),
         ],
         [
-            InlineKeyboardButton("🪙 BTC RSI Above", callback_data="alert_btc_rsi_above"),
-            InlineKeyboardButton("🪙 BTC RSI Below", callback_data="alert_btc_rsi_below"),
+            InlineKeyboardButton("🪙 BTC RSI > 75", callback_data="alert_btc_rsi_above"),
+            InlineKeyboardButton("🪙 BTC RSI < 25", callback_data="alert_btc_rsi_below"),
         ],
         [
             InlineKeyboardButton("🔙 Back to Menu", callback_data="main_menu"),
@@ -1687,48 +1689,53 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "alert_menu":
         await query.edit_message_text(
             "🚨 <b>Set Alert</b>\n\n"
-            "Alerts fire every <b>5 minutes</b> if value changes.\n\n"
-            "🥇 <b>Gold (XAU/USD M5)</b> — RSI / MACD\n"
-            "🪙 <b>Bitcoin (BTC/USD M15)</b> — RSI\n\n"
+            "Tap a button to activate instantly.\n\n"
+            "🥇 <b>Gold XAU/USD M5</b> — RSI 75/25\n"
+            "🪙 <b>Bitcoin BTC/USD M15</b> — RSI 75/25\n"
+            "📈 <b>MACD</b> — Bullish/Bearish Cross\n\n"
             "Choose alert type:",
             parse_mode="HTML",
             reply_markup=alert_menu_keyboard(),
         )
 
     elif data == "alert_rsi_above":
-        user_state[user_id] = {"step": "waiting_rsi_above"}
+        add_alert(chat_id, "rsi_above", 75)
         await query.edit_message_text(
-            "🔥 <b>RSI Above Alert</b>\n\n"
-            "Type the RSI level (overbought = 70):\n"
-            "Example: <code>70</code>",
+            "✅ <b>Alert Set!</b>\n\n"
+            "🔥 Will notify when Gold RSI goes <b>ABOVE 75</b> (Overbought)\n"
+            "📡 Source: MT5 bridge (auto-fallback to cloud)",
             parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_rsi_below":
-        user_state[user_id] = {"step": "waiting_rsi_below"}
+        add_alert(chat_id, "rsi_below", 25)
         await query.edit_message_text(
-            "😴 <b>RSI Below Alert</b>\n\n"
-            "Type the RSI level (oversold = 30):\n"
-            "Example: <code>30</code>",
+            "✅ <b>Alert Set!</b>\n\n"
+            "😴 Will notify when Gold RSI drops <b>BELOW 25</b> (Oversold)\n"
+            "📡 Source: MT5 bridge (auto-fallback to cloud)",
             parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_btc_rsi_above":
-        user_state[user_id] = {"step": "waiting_btc_rsi_above"}
+        add_alert(chat_id, "btc_rsi_above", 75)
         await query.edit_message_text(
-            "🪙 <b>BTC RSI Above Alert (M15)</b>\n\n"
-            "Type the RSI level (overbought = 70):\n"
-            "Example: <code>70</code>",
+            "✅ <b>BTC Alert Set!</b>\n\n"
+            "🔥 Will notify when BTC RSI goes <b>ABOVE 75</b> (M15, Overbought)\n"
+            "☁️ Source: TwelveData",
             parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_btc_rsi_below":
-        user_state[user_id] = {"step": "waiting_btc_rsi_below"}
+        add_alert(chat_id, "btc_rsi_below", 25)
         await query.edit_message_text(
-            "🪙 <b>BTC RSI Below Alert (M15)</b>\n\n"
-            "Type the RSI level (oversold = 30):\n"
-            "Example: <code>30</code>",
+            "✅ <b>BTC Alert Set!</b>\n\n"
+            "😴 Will notify when BTC RSI drops <b>BELOW 25</b> (M15, Oversold)\n"
+            "☁️ Source: TwelveData",
             parse_mode="HTML",
+            reply_markup=main_menu_keyboard(),
         )
 
     elif data == "alert_macd_bull":
