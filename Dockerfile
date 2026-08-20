@@ -10,7 +10,6 @@ RUN git clone https://github.com/shiyu-coder/Kronos.git /tmp/Kronos
 
 # Pre-download model weights into image
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download('NeoQuasar/Kronos-Tokenizer-base', local_dir='/app/models/tokenizer'); snapshot_download('NeoQuasar/Kronos-base', local_dir='/app/models/kronos-base')"
-
 COPY handler.py .
 
 CMD ["python", "-u", "handler.py"]
