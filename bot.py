@@ -1797,6 +1797,7 @@ def main():
     # Load custom model
     load_custom_model()
 
+    _app = Application.builder().token(TELEGRAM_TOKEN).build()
     _app.add_handler(CommandHandler("start", start_command))
     _app.add_handler(CommandHandler("menu", menu_command))
     _app.add_handler(CallbackQueryHandler(button_callback))
